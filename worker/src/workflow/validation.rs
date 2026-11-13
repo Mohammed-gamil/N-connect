@@ -134,14 +134,24 @@ pub fn validate_active(
         );
     }
     if let Some(app) = action_app {
-        validate_active_connection(
-            "action.connectionId",
-            app.auth_kind,
-            def.action.application,
-            def.action.connection_id.as_deref(),
-            owned_connections,
-            &mut errors,
-        );
+        let http_no_auth = def.action.application == AppId::Http
+            && def
+                .action
+                .configuration
+                .get("authType")
+                .and_then(|v| v.as_str())
+                .map(|s| s.is_empty() || s == "none")
+                .unwrap_or(true);
+        if !http_no_auth {
+            validate_active_connection(
+                "action.connectionId",
+                app.auth_kind,
+                def.action.application,
+                def.action.connection_id.as_deref(),
+                owned_connections,
+                &mut errors,
+            );
+        }
     }
 
     let trigger_def = catalog.get_trigger(def.trigger.application, &def.trigger.event);
@@ -584,5 +594,48 @@ mod tests {
             },
         };
         assert!(validate_active(&wf, &catalog, &conns).is_ok());
+    }
+
+    #[test]
+    fn http_action_allows_no_connection_for_none_auth_but_requires_for_bearer() {
+        let catalog = Catalog::mvp();
+        let conns = sample_connections();
+        let mut act_cfg = BTreeMap::new();
+        act_cfg.insert("method".to_string(), ConfigValue::String("POST".to_string()));
+        act_cfg.insert(
+            "url".to_string(),
+            ConfigValue::String("https://example.com/hook".to_string()),
+        );
+        act_cfg.insert("authType".to_string(), ConfigValue::String("none".to_string()));
+
+        let mut trig_cfg = BTreeMap::new();
+        trig_cfg.insert(
+            "verification".to_string(),
+            ConfigValue::String("hmac_sha256".to_string()),
+        );
+
+        let mut wf = WorkflowDefinitionV1 {
+            version: 1,
+            trigger: WorkflowStep {
+                application: AppId::Webhook,
+                event: "webhook.received".to_string(),
+                connection_id: None,
+                configuration: trig_cfg,
+            },
+            filters: vec![],
+            action: WorkflowStep {
+                application: AppId::Http,
+                event: "http.request".to_string(),
+                connection_id: None,
+                configuration: act_cfg,
+            },
+        };
+        assert!(validate_active(&wf, &catalog, &conns).is_ok());
+
+        wf.action
+            .configuration
+            .insert("authType".to_string(), ConfigValue::String("bearer".to_string()));
+        let errs = validate_active(&wf, &catalog, &conns).unwrap_err();
+        assert!(errs.contains_key("action.connectionId"));
     }
 }

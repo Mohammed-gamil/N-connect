@@ -28,6 +28,18 @@ pub fn api_base(env: &Env) -> String {
     DEFAULT_CLICKUP_API_BASE.to_string()
 }
 
+pub fn oauth_authorize_url(env: &Env) -> String {
+    #[cfg(feature = "e2e")]
+    if let Ok(v) = env.var("CLICKUP_OAUTH_BASE") {
+        let s = v.to_string();
+        if !s.trim().is_empty() {
+            return format!("{}/oauth/authorize", s.trim_end_matches('/'));
+        }
+    }
+    let _ = env;
+    "https://app.clickup.com/api".to_string()
+}
+
 pub(crate) fn get_env_secret_or_var(env: &Env, name: &str) -> Option<String> {
     if let Ok(s) = env.secret(name) {
         let val = s.to_string();

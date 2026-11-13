@@ -28,6 +28,18 @@ pub fn api_base(env: &Env) -> String {
     DEFAULT_SLACK_API_BASE.to_string()
 }
 
+pub fn oauth_authorize_url(env: &Env) -> String {
+    #[cfg(feature = "e2e")]
+    if let Ok(v) = env.var("SLACK_OAUTH_BASE") {
+        let s = v.to_string();
+        if !s.trim().is_empty() {
+            return format!("{}/oauth/v2/authorize", s.trim_end_matches('/'));
+        }
+    }
+    let _ = env;
+    "https://slack.com/oauth/v2/authorize".to_string()
+}
+
 pub fn classify_slack_error(
     status: u16,
     retry_after_header: Option<&str>,

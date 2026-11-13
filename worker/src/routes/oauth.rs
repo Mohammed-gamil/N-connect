@@ -109,7 +109,7 @@ pub async fn oauth_start(
         .map_err(|_| AppError::NotFound("Application not found.".to_string()))?;
 
     let connector = get_connector(app_id);
-    let (authorize_url, scopes) = match connector.auth() {
+    let (default_authorize_url, scopes) = match connector.auth() {
         AuthSpec::OAuth2 {
             authorize_url,
             scopes,
@@ -120,6 +120,11 @@ pub async fn oauth_start(
                 "This application does not use OAuth2.".to_string(),
             ));
         }
+    };
+    let authorize_url = match app_id {
+        AppId::Clickup => crate::connectors::clickup::oauth_authorize_url(&ctx.env),
+        AppId::Slack => crate::connectors::slack::oauth_authorize_url(&ctx.env),
+        _ => default_authorize_url.to_string(),
     };
 
     let raw_body = read_body_limited(&mut req, MAX_API_BODY_BYTES).await?;
@@ -173,7 +178,7 @@ pub async fn oauth_start(
     .await
     .map_err(crate::db::DbError::from)?;
 
-    let mut auth_url = Url::parse(authorize_url)
+    let mut auth_url = Url::parse(&authorize_url)
         .map_err(|e| AppError::Internal(format!("Invalid authorize URL: {e}")))?;
     {
         let mut qp = auth_url.query_pairs_mut();
