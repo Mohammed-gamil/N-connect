@@ -5,6 +5,7 @@ worker/build/
 worker/target/
 target/
 .wrangler/
+.tmp-preview/
 .dev.vars
 *.log
 playwright-report/

@@ -142,7 +142,9 @@ N-connect/
 │   └── SETUP.md                  # Cloudflare / ClickUp / Slack setup + acceptance checklist
 ├── worker/                       # Rust Worker crate
 │   ├── Cargo.toml
-│   ├── migrations/0001_init.sql
+│   ├── migrations/
+│   │   ├── 0001_init.sql
+│   │   └── 0002_oauth_apps.sql
 │   └── src/
 │       ├── lib.rs                # #[event(fetch|queue|scheduled)]
 │       ├── http/                 # router, middleware (auth, CSRF, request ids), responses

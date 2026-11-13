@@ -4,7 +4,7 @@ compatibility_date = "2026-11-01"
 
 [build]
 cwd = "worker"
-command = "worker-build --release"
+command = "node ../scripts/build-worker.mjs"
 
 # React SPA built into web/dist and served by the same Worker (same origin => first-party cookies, no CORS).
 # Requests to /api/* and /hooks/* run the Worker first; everything else is a static asset with SPA fallback.

@@ -1,0 +1,46 @@
+# E2E Wrangler configuration for Integration Hub.
+# Note: run-e2e.mjs also generates an ephemeral copy with the dynamically allocated
+# fake-upstream and worker ports so parallel/repeated runs never collide.
+name = "integration-hub-e2e"
+main = "../worker/build/index.js"
+compatibility_date = "2026-11-01"
+
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/hooks/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "integration-hub"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "../worker/migrations"
+
+[[queues.producers]]
+binding = "EXECUTIONS"
+queue = "hub-executions"
+
+[[queues.consumers]]
+queue = "hub-executions"
+max_batch_size = 5
+max_batch_timeout = 1
+max_retries = 5
+dead_letter_queue = "hub-executions-dlq"
+
+[[queues.consumers]]
+queue = "hub-executions-dlq"
+max_batch_size = 10
+
+[vars]
+ENVIRONMENT = "development"
+APP_ORIGIN = "http://127.0.0.1:8788"
+CREDENTIALS_KEY_V1 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+CLICKUP_CLIENT_ID = "cu_e2e_client_id"
+CLICKUP_CLIENT_SECRET = "cu_e2e_client_secret"
+SLACK_CLIENT_ID = "sl_e2e_client_id"
+SLACK_CLIENT_SECRET = "sl_e2e_client_secret"
+CLICKUP_API_BASE = "http://127.0.0.1:8799/api/v2"
+CLICKUP_OAUTH_BASE = "http://127.0.0.1:8799"
+SLACK_API_BASE = "http://127.0.0.1:8799/api"
+SLACK_OAUTH_BASE = "http://127.0.0.1:8799"
