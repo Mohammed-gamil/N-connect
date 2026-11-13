@@ -6,6 +6,7 @@ import {
   KeyRound,
   Plug,
   RefreshCw,
+  Settings2,
   Trash2,
 } from "lucide-react";
 import { AppIcon } from "../../components/AppIcon";
@@ -28,9 +29,20 @@ import {
   Skeleton,
   useToast,
 } from "../../components/ui";
-import type { AppId, Connection, ConnectionStatus } from "../../contracts";
+import type {
+  AppId,
+  Connection,
+  ConnectionStatus,
+  OAuthAppConfigStatus,
+} from "../../contracts";
 import { api, ApiClientError } from "../../lib/api";
 import { formatRelativeTime, getAppName } from "../../lib/utils";
+import { OAuthAppSetupDialog } from "./OAuthAppSetupDialog";
+import {
+  TOKEN_CONNECT_META,
+  TokenGuideBox,
+  type TokenAppId,
+} from "./TokenGuideBox";
 
 const STATUS_BADGE: Record<
   ConnectionStatus,
@@ -56,11 +68,47 @@ function formatDate(timestampMs: number): string {
   }).format(new Date(timestampMs));
 }
 
+function defaultOAuthStatus(appId: "clickup" | "slack"): OAuthAppConfigStatus {
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "http://localhost:8787";
+  return appId === "slack"
+    ? {
+        applicationId: "slack",
+        name: "Slack",
+        configured: false,
+        source: "none",
+        clientId: null,
+        redirectUrl: `${origin}/api/oauth/slack/callback`,
+        requiredScopes: [
+          "chat:write",
+          "chat:write.public",
+          "channels:read",
+          "groups:read",
+        ],
+        docsHint:
+          "In api.slack.com/apps → Create New App → OAuth & Permissions, add the Redirect URL and Bot Token Scopes above, then copy Client ID and Client Secret from Basic Information.",
+        updatedAt: null,
+      }
+    : {
+        applicationId: "clickup",
+        name: "ClickUp",
+        configured: false,
+        source: "none",
+        clientId: null,
+        redirectUrl: `${origin}/api/oauth/clickup/callback`,
+        requiredScopes: [],
+        docsHint:
+          "In ClickUp → Settings → ClickUp API (or Integrations) → Create an App, paste the Redirect URL above, then copy your Client ID and Client Secret.",
+        updatedAt: null,
+      };
+}
+
 export function ConnectionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
 
   const [connections, setConnections] = React.useState<Connection[]>([]);
+  const [oauthApps, setOauthApps] = React.useState<OAuthAppConfigStatus[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
 
@@ -75,21 +123,26 @@ export function ConnectionsPage() {
   );
   const [disconnecting, setDisconnecting] = React.useState(false);
 
-  const [tokenModalApp, setTokenModalApp] = React.useState<"clickup" | "http" | null>(
-    null,
-  );
+  const [tokenModalApp, setTokenModalApp] = React.useState<TokenAppId | null>(null);
   const [tokenDisplayName, setTokenDisplayName] = React.useState("");
   const [tokenValue, setTokenValue] = React.useState("");
   const [savingToken, setSavingToken] = React.useState(false);
   const [tokenError, setTokenError] = React.useState<string | null>(null);
-  const [showClickupTokenOption, setShowClickupTokenOption] = React.useState(false);
+
+  const [oauthSetupAppId, setOauthSetupAppId] = React.useState<
+    "clickup" | "slack" | null
+  >(null);
 
   const loadConnections = React.useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await api.listConnections(signal);
-      setConnections(data.connections);
+      const [connData, oauthData] = await Promise.all([
+        api.listConnections(signal),
+        api.listOAuthApps(signal).catch(() => ({ apps: [] })),
+      ]);
+      setConnections(connData.connections);
+      setOauthApps(oauthData.apps);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         return;
@@ -138,6 +191,24 @@ export function ConnectionsPage() {
     nextParams.delete("connectError");
     setSearchParams(nextParams, { replace: true });
   }, [loadConnections, searchParams, setSearchParams, toast]);
+
+  function getOAuthStatus(appId: "clickup" | "slack"): OAuthAppConfigStatus {
+    return (
+      oauthApps.find((a) => a.applicationId === appId) ?? defaultOAuthStatus(appId)
+    );
+  }
+
+  function handleOAuthAppSaved(updated: OAuthAppConfigStatus) {
+    setOauthApps((prev) => {
+      const exists = prev.some((a) => a.applicationId === updated.applicationId);
+      if (exists) {
+        return prev.map((a) =>
+          a.applicationId === updated.applicationId ? updated : a,
+        );
+      }
+      return [...prev, updated];
+    });
+  }
 
   async function handleStartOAuth(appId: "clickup" | "slack") {
     if (oauthLoadingApp) return;
@@ -207,11 +278,16 @@ export function ConnectionsPage() {
       return;
     }
     if (conn.applicationId === "clickup" || conn.applicationId === "slack") {
-      void handleStartOAuth(conn.applicationId);
+      const status = getOAuthStatus(conn.applicationId);
+      if (status.configured) {
+        void handleStartOAuth(conn.applicationId);
+      } else {
+        openTokenModal(conn.applicationId, conn.displayName);
+      }
     }
   }
 
-  function openTokenModal(appId: "clickup" | "http", initialDisplayName = "") {
+  function openTokenModal(appId: TokenAppId, initialDisplayName = "") {
     setTokenModalApp(appId);
     setTokenDisplayName(initialDisplayName);
     setTokenValue("");
@@ -282,6 +358,99 @@ export function ConnectionsPage() {
     }
   }
 
+  function renderOAuthAppCard(appId: "clickup" | "slack") {
+    const status = getOAuthStatus(appId);
+    const isClickUp = appId === "clickup";
+    const description = isClickUp
+      ? "Trigger automations when tasks change"
+      : "Deliver formatted messages to channels";
+    const tokenBtnLabel = isClickUp
+      ? "Paste API token (pk_...)"
+      : "Paste Bot token (xoxb-...)";
+
+    return (
+      <Card key={appId} className="flex flex-col justify-between">
+        <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-3">
+          <div className="flex items-start gap-3">
+            <AppIcon appId={appId} size="lg" />
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <CardTitle className="text-base">{status.name}</CardTitle>
+                {status.source === "organization" ? (
+                  <Badge variant="success">Custom OAuth</Badge>
+                ) : status.source === "server" ? (
+                  <Badge variant="success">OAuth ready</Badge>
+                ) : (
+                  <Badge variant="neutral">Token ready</Badge>
+                )}
+              </div>
+              <CardDescription className="mt-0.5">{description}</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-2.5 pt-0">
+          {status.configured ? (
+            <>
+              <Button
+                className="w-full"
+                size="sm"
+                loading={oauthLoadingApp === appId}
+                onClick={() => void handleStartOAuth(appId)}
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                Connect {status.name}
+              </Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openTokenModal(appId)}
+                >
+                  <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                  Use token
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setOauthSetupAppId(appId)}
+                >
+                  <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  OAuth setup
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Button
+                className="w-full"
+                size="sm"
+                onClick={() => openTokenModal(appId)}
+              >
+                <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                {tokenBtnLabel}
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full"
+                size="sm"
+                onClick={() => setOauthSetupAppId(appId)}
+              >
+                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                Configure 1-click OAuth app
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const tokenMeta = tokenModalApp ? TOKEN_CONNECT_META[tokenModalApp] : null;
+  const activeOAuthSetupStatus = oauthSetupAppId
+    ? getOAuthStatus(oauthSetupAppId)
+    : null;
+
   return (
     <div className="space-y-8">
       <div>
@@ -289,7 +458,7 @@ export function ConnectionsPage() {
           Connections
         </h1>
         <p className="mt-1 text-sm text-ink-secondary">
-          Manage your connected ClickUp, Slack, and HTTP credential accounts.
+          Connect ClickUp, Slack, or HTTP credentials directly with an API/Bot token, or configure your workspace&apos;s own OAuth app.
         </p>
       </div>
 
@@ -326,7 +495,7 @@ export function ConnectionsPage() {
           <EmptyState
             icon={<Plug className="h-5 w-5" aria-hidden="true" />}
             title="No connected apps yet"
-            description="Connect ClickUp or Slack below to start triggering and delivering automations."
+            description="Paste an API/Bot token or set up OAuth below to connect ClickUp and Slack in seconds."
           />
         ) : (
           <div className="space-y-3">
@@ -413,81 +582,8 @@ export function ConnectionsPage() {
       <section aria-label="Connect an app" className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Connect an app</h2>
         <div className="grid gap-4 md:grid-cols-3">
-          {/* ClickUp */}
-          <Card className="flex flex-col justify-between">
-            <CardHeader className="flex-row items-start gap-3 space-y-0 pb-3">
-              <AppIcon appId="clickup" size="lg" />
-              <div>
-                <CardTitle className="text-base">ClickUp</CardTitle>
-                <CardDescription>
-                  Trigger automations when tasks change
-                </CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 pt-0">
-              <Button
-                className="w-full"
-                size="sm"
-                loading={oauthLoadingApp === "clickup"}
-                onClick={() => void handleStartOAuth("clickup")}
-              >
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                Connect ClickUp
-              </Button>
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setShowClickupTokenOption((v) => !v)}
-                  className="text-xs font-medium text-ink-secondary underline-offset-2 hover:text-ink hover:underline"
-                >
-                  {showClickupTokenOption
-                    ? "Hide personal token option"
-                    : "Or paste a personal API token"}
-                </button>
-                {showClickupTokenOption && (
-                  <div className="mt-2 rounded-lg border border-border bg-subtle p-2.5">
-                    <p className="text-xs text-ink-secondary">
-                      Useful for quick setup with a personal ClickUp API key (
-                      <code className="font-mono">pk_...</code>).
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-2 w-full"
-                      onClick={() => openTokenModal("clickup")}
-                    >
-                      <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                      Paste ClickUp token
-                    </Button>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Slack */}
-          <Card className="flex flex-col justify-between">
-            <CardHeader className="flex-row items-start gap-3 space-y-0 pb-3">
-              <AppIcon appId="slack" size="lg" />
-              <div>
-                <CardTitle className="text-base">Slack</CardTitle>
-                <CardDescription>
-                  Deliver formatted messages to channels
-                </CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <Button
-                className="w-full"
-                size="sm"
-                loading={oauthLoadingApp === "slack"}
-                onClick={() => void handleStartOAuth("slack")}
-              >
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                Connect Slack
-              </Button>
-            </CardContent>
-          </Card>
+          {renderOAuthAppCard("clickup")}
+          {renderOAuthAppCard("slack")}
 
           {/* HTTP Credential */}
           <Card className="flex flex-col justify-between">
@@ -523,73 +619,77 @@ export function ConnectionsPage() {
         }}
         labelledBy="token-modal-title"
         describedBy="token-modal-desc"
+        className="max-w-lg max-h-[90vh] overflow-y-auto"
       >
-        <form onSubmit={handleCreateTokenConnection}>
-          <DialogHeader>
-            <DialogTitle id="token-modal-title">
-              {tokenModalApp === "clickup"
-                ? "Connect ClickUp with personal API token"
-                : "Add HTTP credential"}
-            </DialogTitle>
-            <DialogDescription id="token-modal-desc">
-              {tokenModalApp === "clickup"
-                ? "Your token is encrypted at rest and never shown again."
-                : "Store a Bearer token, API key, or user:password Basic credential encrypted at rest."}
-            </DialogDescription>
-          </DialogHeader>
+        {tokenModalApp && tokenMeta && (
+          <form onSubmit={handleCreateTokenConnection}>
+            <DialogHeader>
+              <DialogTitle id="token-modal-title">
+                {tokenMeta.title}
+              </DialogTitle>
+              <DialogDescription id="token-modal-desc">
+                {tokenMeta.description}
+              </DialogDescription>
+            </DialogHeader>
 
-          <div className="mt-4 space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="token-display-name">Label (optional)</Label>
-              <Input
-                id="token-display-name"
-                placeholder={
-                  tokenModalApp === "clickup"
-                    ? "e.g. Acme ClickUp Workspace"
-                    : "e.g. Production API Key"
-                }
-                value={tokenDisplayName}
-                onChange={(e) => setTokenDisplayName(e.target.value)}
-              />
+            <div className="mt-4 space-y-4">
+              <TokenGuideBox appId={tokenModalApp} />
+
+              <div className="space-y-1.5">
+                <Label htmlFor="token-display-name">Label (optional)</Label>
+                <Input
+                  id="token-display-name"
+                  placeholder={tokenMeta.namePlaceholder}
+                  value={tokenDisplayName}
+                  onChange={(e) => setTokenDisplayName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="token-secret-input">
+                  {tokenMeta.tokenLabel}
+                </Label>
+                <Input
+                  id="token-secret-input"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={tokenMeta.tokenPlaceholder}
+                  value={tokenValue}
+                  error={Boolean(tokenError)}
+                  onChange={(e) => setTokenValue(e.target.value)}
+                />
+                {tokenError && (
+                  <p className="text-xs text-danger-text">{tokenError}</p>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="token-secret-input">
-                {tokenModalApp === "clickup"
-                  ? "Personal API token"
-                  : "Token or secret"}
-              </Label>
-              <Input
-                id="token-secret-input"
-                type="password"
-                autoComplete="off"
-                placeholder={
-                  tokenModalApp === "clickup" ? "pk_..." : "Paste secret..."
-                }
-                value={tokenValue}
-                error={Boolean(tokenError)}
-                onChange={(e) => setTokenValue(e.target.value)}
-              />
-              {tokenError && (
-                <p className="text-xs text-danger-text">{tokenError}</p>
-              )}
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={savingToken}
-              onClick={() => setTokenModalApp(null)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" loading={savingToken}>
-              Save credential
-            </Button>
-          </DialogFooter>
-        </form>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={savingToken}
+                onClick={() => setTokenModalApp(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" loading={savingToken}>
+                Verify & Save
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
       </Dialog>
+
+      {/* OAuth App Setup Modal */}
+      <OAuthAppSetupDialog
+        open={Boolean(oauthSetupAppId)}
+        status={activeOAuthSetupStatus}
+        onOpenChange={(open) => {
+          if (!open) setOauthSetupAppId(null);
+        }}
+        onSaved={handleOAuthAppSaved}
+        onSaveAndConnect={handleStartOAuth}
+      />
 
       {/* Disconnect confirmation dialog */}
       <Dialog

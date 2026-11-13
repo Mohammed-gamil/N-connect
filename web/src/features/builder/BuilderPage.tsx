@@ -52,6 +52,7 @@ import type {
   ConfigValue,
   Connection,
   Filter,
+  OAuthAppConfigStatus,
   TestRunResult,
 } from "../../contracts";
 import { api, ApiClientError } from "../../lib/api";
@@ -106,6 +107,7 @@ export function BuilderPage() {
   const [name, setName] = React.useState("Untitled automation");
   const [apps, setApps] = React.useState<AppDefinition[]>(DEFAULT_APPS);
   const [connections, setConnections] = React.useState<Connection[]>([]);
+  const [oauthApps, setOauthApps] = React.useState<OAuthAppConfigStatus[]>([]);
 
   const [history, setHistory] = React.useState(() =>
     createHistory<CanvasState>(INITIAL_CANVAS_STATE),
@@ -145,15 +147,16 @@ export function BuilderPage() {
     setAutomationId(id);
   }, [id]);
 
-  // Initial load: apps, connections, and existing automation if editing
+  // Initial load: apps, connections, oauth apps, and existing automation if editing
   const loadInitialData = React.useCallback(
     async (signal?: AbortSignal) => {
       setLoading(true);
       setLoadError(null);
       try {
-        const [appsRes, connsRes, existing] = await Promise.all([
+        const [appsRes, connsRes, oauthRes, existing] = await Promise.all([
           api.listApps(signal).catch(() => ({ apps: DEFAULT_APPS })),
           api.listConnections(signal).catch(() => ({ connections: [] })),
+          api.listOAuthApps(signal).catch(() => ({ apps: [] })),
           id ? api.getAutomation(id, signal) : Promise.resolve(null),
         ]);
 
@@ -161,6 +164,7 @@ export function BuilderPage() {
           appsRes.apps.length > 0 ? appsRes.apps : DEFAULT_APPS;
         setApps(loadedApps);
         setConnections(connsRes.connections);
+        setOauthApps(oauthRes.apps);
 
         if (existing) {
           setAutomationId(existing.id);
@@ -833,6 +837,7 @@ export function BuilderPage() {
           state={state}
           apps={apps}
           connections={connections}
+          oauthApps={oauthApps}
           advancedMode={advancedMode}
           activeStep={activeStep}
           fieldErrors={fieldErrors}
@@ -855,6 +860,18 @@ export function BuilderPage() {
           }
           onRemoveNode={handleRemoveNode}
           onStartOAuth={handleStartOAuth}
+          onOAuthAppUpdated={(updated) =>
+            setOauthApps((prev) => {
+              const exists = prev.some(
+                (a) => a.applicationId === updated.applicationId,
+              );
+              return exists
+                ? prev.map((a) =>
+                    a.applicationId === updated.applicationId ? updated : a,
+                  )
+                : [...prev, updated];
+            })
+          }
           onConnectionCreated={(conn) =>
             setConnections((prev) => [conn, ...prev])
           }

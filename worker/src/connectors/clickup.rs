@@ -488,19 +488,24 @@ impl Connector for ClickUpConnector {
         cx: &Cx<'_>,
         code: &str,
     ) -> Result<NewConnection, ConnectorError> {
-        let client_id = get_env_secret_or_var(cx.env, "CLICKUP_CLIENT_ID").ok_or_else(|| {
-            ConnectorError::permanent(
-                "ClickUp OAuth is not configured on this server.",
-                "missing CLICKUP_CLIENT_ID",
-            )
-        })?;
-        let client_secret =
-            get_env_secret_or_var(cx.env, "CLICKUP_CLIENT_SECRET").ok_or_else(|| {
-                ConnectorError::permanent(
-                    "ClickUp OAuth is not configured on this server.",
-                    "missing CLICKUP_CLIENT_SECRET",
-                )
-            })?;
+        let (client_id, client_secret_val, _) =
+            crate::routes::oauth::resolve_oauth_credentials(cx.env, cx.org_id, AppId::Clickup)
+                .await
+                .map_err(|e| {
+                    ConnectorError::permanent(
+                        "Could not load ClickUp OAuth configuration.",
+                        format!("resolve clickup oauth failed: {e:?}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    ConnectorError::permanent(
+                        "ClickUp OAuth is not configured yet. Add your ClickUp Client ID & Secret in Connections.",
+                        "missing CLICKUP_CLIENT_ID / CLICKUP_CLIENT_SECRET",
+                    )
+                })?;
+        let client_secret = client_secret_val
+            .expose_str()
+            .map_err(|_| ConnectorError::permanent("Saved ClickUp Client Secret is invalid.", "invalid utf8 client_secret"))?;
 
         let base = api_base(cx.env);
         let token_url = format!("{base}/oauth/token");

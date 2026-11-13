@@ -39,3 +39,11 @@ Only `{{dotted.path}}` lookups are supported, with no logic, loops or helpers. U
 | `http` | — | `http.request` (fields: `method`, `url` template, `headers` key_value, `authType`, `body` template) |
 
 ClickUp variables: `task.id`, `task.name`, `task.url`, `task.status`, `task.description`, `task.assignees`, `task.creator`, `task.list`, `task.due_date`, `task.priority`, `event.type`.
+
+## Self-serve app credentials & token connections
+
+- `GET /api/oauth-apps`: lists per-app (`clickup`, `slack`) OAuth readiness (`configured`, `source`: `"organization" | "server" | "none"`, non-secret `clientId`, pre-filled `redirectUrl`, `requiredScopes`, `docsHint`). Never returns `clientSecret`.
+- `PUT /api/oauth-apps/:appId`: saves or updates per-organization `clientId` and AES-256-GCM encrypted `clientSecret` (`SaveOAuthAppConfigRequest`). If `clientSecret` is omitted/empty when an organization config already exists, the stored encrypted secret is preserved.
+- `DELETE /api/oauth-apps/:appId`: removes the organization's custom OAuth app credentials (falling back to server secrets if configured).
+- `POST /api/connections`: accepts token-based connections for `clickup` (Personal API token verified via ClickUp `/user`), `slack` (Bot User OAuth token verified via Slack `auth.test`), and `http`.
+

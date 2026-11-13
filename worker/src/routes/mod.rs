@@ -92,6 +92,9 @@ pub fn build_router(request_id: String) -> Router<'static, String> {
             "/api/oauth/:appId/callback",
             wrap(oauth::oauth_callback),
         )
+        .get_async("/api/oauth-apps", wrap(oauth::list_oauth_apps))
+        .put_async("/api/oauth-apps/:appId", wrap(oauth::upsert_oauth_app))
+        .delete_async("/api/oauth-apps/:appId", wrap(oauth::delete_oauth_app))
         .post_async("/api/http/test", wrap(http_test::http_test))
         // Executions
         .get_async("/api/executions", wrap(executions::list_executions))

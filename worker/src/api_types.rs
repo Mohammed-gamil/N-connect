@@ -326,6 +326,42 @@ pub struct OptionsResponse {
     pub options: Vec<FieldOption>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthAppConfigSource {
+    Organization,
+    Server,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthAppConfigStatus {
+    pub application_id: AppId,
+    pub name: String,
+    pub configured: bool,
+    pub source: OAuthAppConfigSource,
+    pub client_id: Option<String>,
+    pub redirect_url: String,
+    pub required_scopes: Vec<String>,
+    pub docs_hint: String,
+    pub updated_at: Option<UnixMs>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthAppsResponse {
+    pub apps: Vec<OAuthAppConfigStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveOAuthAppConfigRequest {
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
 // ───────────────────────── Workflow definition ─────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -861,5 +897,49 @@ mod tests {
                 "connectedApps": 2
             })
         );
+    }
+
+    #[test]
+    fn oauth_app_config_dtos_camel_case_roundtrip() {
+        let resp = OAuthAppsResponse {
+            apps: vec![OAuthAppConfigStatus {
+                application_id: AppId::Slack,
+                name: "Slack".to_string(),
+                configured: true,
+                source: OAuthAppConfigSource::Organization,
+                client_id: Some("123.456".to_string()),
+                redirect_url: "https://hub.example.com/api/oauth/slack/callback".to_string(),
+                required_scopes: vec!["chat:write".to_string()],
+                docs_hint: "Create app".to_string(),
+                updated_at: Some(1_700_000_000_000),
+            }],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "apps": [{
+                    "applicationId": "slack",
+                    "name": "Slack",
+                    "configured": true,
+                    "source": "organization",
+                    "clientId": "123.456",
+                    "redirectUrl": "https://hub.example.com/api/oauth/slack/callback",
+                    "requiredScopes": ["chat:write"],
+                    "docsHint": "Create app",
+                    "updatedAt": 1_700_000_000_000u64
+                }]
+            })
+        );
+        let back: OAuthAppsResponse = serde_json::from_value(v).unwrap();
+        assert_eq!(back, resp);
+
+        let save_req: SaveOAuthAppConfigRequest = serde_json::from_value(json!({
+            "clientId": "123.456",
+            "clientSecret": null
+        }))
+        .unwrap();
+        assert_eq!(save_req.client_id, "123.456");
+        assert_eq!(save_req.client_secret, None);
     }
 }

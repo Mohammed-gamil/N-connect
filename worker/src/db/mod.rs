@@ -4,6 +4,7 @@ pub mod connections;
 pub mod credentials;
 pub mod events;
 pub mod executions;
+pub mod oauth_apps;
 pub mod sessions;
 pub mod users;
 pub mod webhooks;

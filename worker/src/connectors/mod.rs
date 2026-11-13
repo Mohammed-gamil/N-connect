@@ -409,9 +409,9 @@ fn clickup_app_definition() -> AppDefinition {
         auth_kind: AuthKind::Oauth2,
         token_auth: Some(TokenAuthSpec {
             label: "Personal API token".to_string(),
-            help: "Paste a ClickUp personal API token (pk_...) for quick testing without an OAuth app."
+            help: "Paste a ClickUp personal API token (pk_...) for instant setup without configuring an OAuth app."
                 .to_string(),
-            advanced: true,
+            advanced: false,
         }),
         triggers: vec![
             TriggerDefinition {
@@ -455,7 +455,12 @@ fn slack_app_definition() -> AppDefinition {
         description: "Post formatted messages to Slack channels.".to_string(),
         icon_url: "/icons/slack.svg".to_string(),
         auth_kind: AuthKind::Oauth2,
-        token_auth: None,
+        token_auth: Some(TokenAuthSpec {
+            label: "Bot User OAuth token".to_string(),
+            help: "Paste a Slack Bot Token (xoxb-...) from OAuth & Permissions for instant setup without configuring OAuth redirect URLs."
+                .to_string(),
+            advanced: false,
+        }),
         triggers: vec![],
         actions: vec![ActionDefinition {
             id: "message.send".to_string(),

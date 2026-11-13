@@ -49,9 +49,9 @@ test.describe.serial("Integration Hub Browser E2E", () => {
 
     // 4. Step 2: Connect ClickUp via personal API token
     await page.getByRole("button", { name: /Or paste a personal API token/i }).click();
-    await page.getByPlaceholder("Account label (optional)").fill("Browser ClickUp");
-    await page.getByPlaceholder("Paste personal API token...").fill("pk_browser_valid");
-    await page.getByRole("button", { name: "Save token" }).click();
+    await page.getByPlaceholder("e.g. Acme ClickUp Workspace").fill("Browser ClickUp");
+    await page.getByPlaceholder("pk_...").fill("pk_browser_valid");
+    await page.getByRole("button", { name: "Verify & Save token" }).click();
 
     // 5. Step 3: Select Task Created and workspace + list
     const taskCreatedRadio = page.locator('input[name="trigger-event"][value="task.created"]');

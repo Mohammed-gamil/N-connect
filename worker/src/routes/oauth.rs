@@ -4,23 +4,28 @@ use std::str::FromStr;
 use serde::Deserialize;
 use serde_json::json;
 use url::Url;
-use worker::{Request, Response, RouteContext};
+use worker::{Env, Request, Response, RouteContext};
 
-use crate::api_types::{AppId, ConnectionStatus, OAuthStartRequest, OAuthStartResponse};
+use crate::api_types::{
+    AppId, ConnectionStatus, OAuthAppConfigSource, OAuthAppConfigStatus, OAuthAppsResponse,
+    OAuthStartRequest, OAuthStartResponse, SaveOAuthAppConfigRequest,
+};
 use crate::connectors::clickup::get_env_secret_or_var;
 use crate::connectors::{get_connector, AuthSpec, Cx};
 use crate::crypto::{
-    encrypt_secret, load_master_key, make_credential_aad, new_id, random_token_b64url,
-    sha256_hex, PREFIX_CONNECTION, PREFIX_CREDENTIAL,
+    decrypt_secret, encrypt_secret, load_master_key, make_credential_aad, make_oauth_app_aad,
+    new_id, random_token_b64url, sha256_hex, Secret, PREFIX_CONNECTION, PREFIX_CREDENTIAL,
 };
-use crate::db::{audit, connections, credentials, d1, d1_i64, d1_opt_str};
+use crate::db::{audit, connections, credentials, d1, d1_i64, d1_opt_str, oauth_apps};
 use crate::http::{
-    authenticate, json_response, log_structured, now_ms, read_body_limited, AppError,
-    MAX_API_BODY_BYTES,
+    authenticate, empty_response, json_response, log_structured, now_ms, read_body_limited,
+    read_json_limited, AppError, MAX_API_BODY_BYTES,
 };
 
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000; // 10 minutes
 const CURRENT_KEY_VERSION: i32 = 1;
+const MAX_CLIENT_ID_LEN: usize = 256;
+const MAX_CLIENT_SECRET_LEN: usize = 2048;
 
 #[derive(Debug, Deserialize)]
 struct OAuthStateRow {
@@ -38,6 +43,313 @@ struct OAuthStateRow {
 struct ExistingConnRow {
     id: String,
     credential_id: String,
+}
+
+fn oauth_env_keys(app_id: AppId) -> Option<(&'static str, &'static str)> {
+    match app_id {
+        AppId::Clickup => Some(("CLICKUP_CLIENT_ID", "CLICKUP_CLIENT_SECRET")),
+        AppId::Slack => Some(("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")),
+        AppId::Webhook | AppId::Http => None,
+    }
+}
+
+fn app_origin_str(env: &Env) -> String {
+    get_env_secret_or_var(env, "APP_ORIGIN")
+        .unwrap_or_else(|| "http://localhost:8787".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn oauth_callback_uri(env: &Env, app_id: AppId) -> String {
+    format!("{}/api/oauth/{}/callback", app_origin_str(env), app_id.as_str())
+}
+
+fn oauth_docs_hint(app_id: AppId) -> (&'static str, Vec<String>, &'static str) {
+    match app_id {
+        AppId::Clickup => (
+            "ClickUp",
+            vec![],
+            "In ClickUp → Settings → ClickUp API (or Integrations) → Create an App, paste the Redirect URL above, then copy your Client ID and Client Secret.",
+        ),
+        AppId::Slack => (
+            "Slack",
+            vec![
+                "chat:write".to_string(),
+                "chat:write.public".to_string(),
+                "channels:read".to_string(),
+                "groups:read".to_string(),
+            ],
+            "In api.slack.com/apps → Create New App → OAuth & Permissions, add the Redirect URL and Bot Token Scopes above, then copy Client ID and Client Secret from Basic Information.",
+        ),
+        AppId::Webhook | AppId::Http => ("App", vec![], ""),
+    }
+}
+
+fn has_server_oauth_env(env: &Env, app_id: AppId) -> bool {
+    let Some((id_key, sec_key)) = oauth_env_keys(app_id) else {
+        return false;
+    };
+    get_env_secret_or_var(env, id_key).is_some()
+        && get_env_secret_or_var(env, sec_key).is_some()
+}
+
+/// Resolves `(client_id, client_secret, source)` for an OAuth app:
+/// 1. Organization-configured encrypted OAuth app in D1 (`org_oauth_apps`)
+/// 2. Server-level env vars/secrets (`CLICKUP_CLIENT_ID`/`SECRET` or `SLACK_CLIENT_ID`/`SECRET`)
+pub async fn resolve_oauth_credentials(
+    env: &Env,
+    org_id: &str,
+    app_id: AppId,
+) -> Result<Option<(String, Secret, OAuthAppConfigSource)>, AppError> {
+    let Some((id_key, sec_key)) = oauth_env_keys(app_id) else {
+        return Ok(None);
+    };
+
+    let db = d1(env)?;
+    if let Some(row) = oauth_apps::get_org_oauth_app(&db, org_id, app_id.as_str()).await? {
+        let master_key = load_master_key(env, row.key_version)?;
+        let aad = make_oauth_app_aad(org_id, app_id.as_str());
+        let client_secret = decrypt_secret(&master_key, &row.ciphertext, &row.nonce, &aad)?;
+        return Ok(Some((
+            row.client_id,
+            client_secret,
+            OAuthAppConfigSource::Organization,
+        )));
+    }
+
+    if let (Some(cid), Some(csec)) = (
+        get_env_secret_or_var(env, id_key),
+        get_env_secret_or_var(env, sec_key),
+    ) {
+        return Ok(Some((
+            cid,
+            Secret::from_string(csec),
+            OAuthAppConfigSource::Server,
+        )));
+    }
+
+    Ok(None)
+}
+
+fn build_oauth_status(
+    env: &Env,
+    app_id: AppId,
+    org_row: Option<&oauth_apps::OrgOAuthAppRow>,
+) -> OAuthAppConfigStatus {
+    let (name, required_scopes, docs_hint) = oauth_docs_hint(app_id);
+    let redirect_url = oauth_callback_uri(env, app_id);
+    if let Some(row) = org_row {
+        OAuthAppConfigStatus {
+            application_id: app_id,
+            name: name.to_string(),
+            configured: true,
+            source: OAuthAppConfigSource::Organization,
+            client_id: Some(row.client_id.clone()),
+            redirect_url,
+            required_scopes,
+            docs_hint: docs_hint.to_string(),
+            updated_at: Some(row.updated_at),
+        }
+    } else if has_server_oauth_env(env, app_id) {
+        OAuthAppConfigStatus {
+            application_id: app_id,
+            name: name.to_string(),
+            configured: true,
+            source: OAuthAppConfigSource::Server,
+            client_id: None,
+            redirect_url,
+            required_scopes,
+            docs_hint: docs_hint.to_string(),
+            updated_at: None,
+        }
+    } else {
+        OAuthAppConfigStatus {
+            application_id: app_id,
+            name: name.to_string(),
+            configured: false,
+            source: OAuthAppConfigSource::None,
+            client_id: None,
+            redirect_url,
+            required_scopes,
+            docs_hint: docs_hint.to_string(),
+            updated_at: None,
+        }
+    }
+}
+
+pub async fn list_oauth_apps(
+    req: Request,
+    ctx: RouteContext<String>,
+) -> Result<Response, AppError> {
+    let request_id = &ctx.data;
+    let now = now_ms();
+    let auth = authenticate(&req, &ctx.env, now).await?;
+    let db = d1(&ctx.env)?;
+
+    let rows = oauth_apps::list_org_oauth_apps(&db, &auth.org_id).await?;
+    let apps = [AppId::Clickup, AppId::Slack]
+        .into_iter()
+        .map(|app_id| {
+            let row = rows.iter().find(|r| r.application_id == app_id.as_str());
+            build_oauth_status(&ctx.env, app_id, row)
+        })
+        .collect();
+
+    Ok(json_response(
+        200,
+        &OAuthAppsResponse { apps },
+        request_id,
+        auth.refreshed_cookie.as_deref(),
+    )?)
+}
+
+pub async fn upsert_oauth_app(
+    mut req: Request,
+    ctx: RouteContext<String>,
+) -> Result<Response, AppError> {
+    let request_id = &ctx.data;
+    let now = now_ms();
+    let auth = authenticate(&req, &ctx.env, now).await?;
+
+    let app_str = ctx
+        .param("appId")
+        .ok_or_else(|| AppError::NotFound("Application not found.".to_string()))?;
+    let app_id = AppId::from_str(app_str)
+        .map_err(|_| AppError::NotFound("Application not found.".to_string()))?;
+    if !matches!(app_id, AppId::Clickup | AppId::Slack) {
+        return Err(AppError::NotFound("Application not found.".to_string()));
+    }
+
+    let body: SaveOAuthAppConfigRequest = read_json_limited(&mut req, MAX_API_BODY_BYTES).await?;
+    let client_id = body.client_id.trim();
+    let client_secret_opt = body
+        .client_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let db = d1(&ctx.env)?;
+    let existing = oauth_apps::get_org_oauth_app(&db, &auth.org_id, app_id.as_str()).await?;
+
+    let mut fields = BTreeMap::new();
+    if client_id.is_empty() {
+        fields.insert("clientId".to_string(), "Please enter the OAuth Client ID.".to_string());
+    } else if client_id.len() > MAX_CLIENT_ID_LEN || client_id.chars().any(|c| c.is_control()) {
+        fields.insert(
+            "clientId".to_string(),
+            "Client ID is invalid or exceeds 256 characters.".to_string(),
+        );
+    }
+
+    if let Some(sec) = client_secret_opt {
+        if sec.len() > MAX_CLIENT_SECRET_LEN || sec.chars().any(|c| c.is_control()) {
+            fields.insert(
+                "clientSecret".to_string(),
+                "Client Secret is invalid or too long.".to_string(),
+            );
+        }
+    } else if existing.is_none() {
+        fields.insert(
+            "clientSecret".to_string(),
+            "Please enter the OAuth Client Secret.".to_string(),
+        );
+    }
+
+    if !fields.is_empty() {
+        return Err(AppError::Validation {
+            message: "Please check your OAuth app credentials.".to_string(),
+            fields: Some(fields),
+        });
+    }
+
+    let master_key = load_master_key(&ctx.env, CURRENT_KEY_VERSION)?;
+    let aad = make_oauth_app_aad(&auth.org_id, app_id.as_str());
+
+    let (ciphertext, nonce, key_version) = if let Some(sec) = client_secret_opt {
+        let secret = Secret::from_str_slice(sec);
+        let blob = encrypt_secret(&master_key, CURRENT_KEY_VERSION, &secret, &aad)?;
+        (blob.ciphertext, blob.nonce.to_vec(), blob.key_version)
+    } else {
+        let prev = existing.expect("checked above");
+        (prev.ciphertext, prev.nonce, prev.key_version)
+    };
+
+    oauth_apps::upsert_org_oauth_app(
+        &db,
+        &auth.org_id,
+        app_id.as_str(),
+        client_id,
+        &ciphertext,
+        &nonce,
+        key_version,
+        &auth.user_id,
+        now,
+    )
+    .await?;
+
+    let meta_json = json!({ "applicationId": app_id.as_str() }).to_string();
+    let _ = audit::insert_audit_log(
+        &db,
+        &auth.org_id,
+        Some(&auth.user_id),
+        "oauth_app.configured",
+        Some("oauth_app"),
+        Some(app_id.as_str()),
+        Some(&meta_json),
+        now,
+    )
+    .await;
+
+    let saved = oauth_apps::get_org_oauth_app(&db, &auth.org_id, app_id.as_str()).await?;
+    let status = build_oauth_status(&ctx.env, app_id, saved.as_ref());
+
+    Ok(json_response(
+        200,
+        &status,
+        request_id,
+        auth.refreshed_cookie.as_deref(),
+    )?)
+}
+
+pub async fn delete_oauth_app(
+    req: Request,
+    ctx: RouteContext<String>,
+) -> Result<Response, AppError> {
+    let request_id = &ctx.data;
+    let now = now_ms();
+    let auth = authenticate(&req, &ctx.env, now).await?;
+
+    let app_str = ctx
+        .param("appId")
+        .ok_or_else(|| AppError::NotFound("Application not found.".to_string()))?;
+    let app_id = AppId::from_str(app_str)
+        .map_err(|_| AppError::NotFound("Application not found.".to_string()))?;
+    if !matches!(app_id, AppId::Clickup | AppId::Slack) {
+        return Err(AppError::NotFound("Application not found.".to_string()));
+    }
+
+    let db = d1(&ctx.env)?;
+    let removed = oauth_apps::delete_org_oauth_app(&db, &auth.org_id, app_id.as_str()).await?;
+    if removed {
+        let meta_json = json!({ "applicationId": app_id.as_str() }).to_string();
+        let _ = audit::insert_audit_log(
+            &db,
+            &auth.org_id,
+            Some(&auth.user_id),
+            "oauth_app.removed",
+            Some("oauth_app"),
+            Some(app_id.as_str()),
+            Some(&meta_json),
+            now,
+        )
+        .await;
+    }
+
+    Ok(empty_response(
+        204,
+        request_id,
+        auth.refreshed_cookie.as_deref(),
+    )?)
 }
 
 fn invalid_return_to_error() -> AppError {
@@ -150,25 +462,17 @@ pub async fn oauth_start(
 
     let return_to = sanitize_return_to(body.return_to.as_deref())?;
 
-    let client_id_env = match app_id {
-        AppId::Clickup => "CLICKUP_CLIENT_ID",
-        AppId::Slack => "SLACK_CLIENT_ID",
-        _ => unreachable!(),
-    };
-    let client_id = get_env_secret_or_var(&ctx.env, client_id_env).ok_or_else(|| {
-        AppError::BadRequest(format!(
-            "{} OAuth is not configured on this server yet.",
-            connector.name()
-        ))
-    })?;
+    let (client_id, _client_secret, _source) =
+        resolve_oauth_credentials(&ctx.env, &auth.org_id, app_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{} OAuth is not configured yet. Configure your OAuth Client ID & Secret or connect with a token.",
+                    connector.name()
+                ))
+            })?;
 
-    let app_origin = get_env_secret_or_var(&ctx.env, "APP_ORIGIN")
-        .unwrap_or_else(|| "http://localhost:8787".to_string());
-    let callback_uri = format!(
-        "{}/api/oauth/{}/callback",
-        app_origin.trim_end_matches('/'),
-        app_id.as_str()
-    );
+    let callback_uri = oauth_callback_uri(&ctx.env, app_id);
 
     let raw_state = random_token_b64url(32)?;
     let state_hash = sha256_hex(raw_state.as_bytes());

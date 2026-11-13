@@ -129,6 +129,121 @@ describe("ConnectionsPage", () => {
 
     expect(await screen.findByText("App connected")).toBeInTheDocument();
   });
+
+  it("allows connecting Slack with a bot token and configuring OAuth app credentials in the UI", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, "listConnections").mockResolvedValue({ connections: [] });
+    vi.spyOn(api, "listOAuthApps").mockResolvedValue({
+      apps: [
+        {
+          applicationId: "clickup",
+          name: "ClickUp",
+          configured: false,
+          source: "none",
+          clientId: null,
+          redirectUrl: "https://hub.example.com/api/oauth/clickup/callback",
+          requiredScopes: [],
+          docsHint: "ClickUp docs hint",
+          updatedAt: null,
+        },
+        {
+          applicationId: "slack",
+          name: "Slack",
+          configured: false,
+          source: "none",
+          clientId: null,
+          redirectUrl: "https://hub.example.com/api/oauth/slack/callback",
+          requiredScopes: ["chat:write", "chat:write.public"],
+          docsHint: "Slack docs hint",
+          updatedAt: null,
+        },
+      ],
+    });
+    const createTokenSpy = vi
+      .spyOn(api, "createTokenConnection")
+      .mockResolvedValue({
+        id: "con_sl_tok",
+        applicationId: "slack",
+        displayName: "Client Team (Slack)",
+        status: "connected",
+        createdAt: Date.now(),
+      });
+    const saveOAuthSpy = vi.spyOn(api, "saveOAuthApp").mockResolvedValue({
+      applicationId: "slack",
+      name: "Slack",
+      configured: true,
+      source: "organization",
+      clientId: "sl_client_123",
+      redirectUrl: "https://hub.example.com/api/oauth/slack/callback",
+      requiredScopes: ["chat:write", "chat:write.public"],
+      docsHint: "Slack docs hint",
+      updatedAt: Date.now(),
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/connections"]}>
+        <ToastProvider>
+          <Routes>
+            <Route path="/connections" element={<ConnectionsPage />} />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    // 1. Connect Slack using Bot Token modal
+    const pasteSlackBtn = await screen.findByRole("button", {
+      name: /Paste Bot token/i,
+    });
+    await user.click(pasteSlackBtn);
+
+    expect(
+      screen.getByText("Connect Slack with a Bot token"),
+    ).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText("xoxb-..."), "xoxb-client-123");
+    await user.click(screen.getByRole("button", { name: "Verify & Save" }));
+
+    await waitFor(() => {
+      expect(createTokenSpy).toHaveBeenCalledWith({
+        applicationId: "slack",
+        token: "xoxb-client-123",
+        displayName: undefined,
+      });
+    });
+    expect(await screen.findByText("Client Team (Slack)")).toBeInTheDocument();
+
+    // 2. Open Slack OAuth app configuration modal
+    const oauthSetupBtns = screen.getAllByRole("button", {
+      name: /Configure 1-click OAuth app/i,
+    });
+    await user.click(oauthSetupBtns[1]);
+
+    expect(
+      screen.getByText("Configure Slack OAuth App"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue(
+        "https://hub.example.com/api/oauth/slack/callback",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("chat:write")).toBeInTheDocument();
+
+    await user.type(
+      screen.getByPlaceholderText("Paste Slack Client ID"),
+      "sl_client_123",
+    );
+    await user.type(
+      screen.getByPlaceholderText("Paste Slack Client Secret"),
+      "sl_secret_456",
+    );
+    await user.click(screen.getByRole("button", { name: "Save only" }));
+
+    await waitFor(() => {
+      expect(saveOAuthSpy).toHaveBeenCalledWith("slack", {
+        clientId: "sl_client_123",
+        clientSecret: "sl_secret_456",
+      });
+    });
+  });
 });
 
 describe("ActivityPage", () => {

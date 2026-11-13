@@ -76,41 +76,35 @@ Note your live Worker URL: `https://integration-hub.<your-subdomain>.workers.dev
 
 ---
 
-## 5. Create Your Slack App
+## 5. Client App Connections (UI Self-Serve — Recommended)
 
-1. Open [Slack API Apps](https://api.slack.com/apps) and click **Create New App** → **From scratch**.
-2. Go to **OAuth & Permissions** → **Redirect URLs** and add:
-   ```
-   https://integration-hub.<your-subdomain>.workers.dev/api/oauth/slack/callback
-   ```
-3. Under **Scopes → Bot Token Scopes**, add:
-   - `chat:write`
-   - `chat:write.public` (allows posting to public channels without inviting the bot first; for private channels, invite the bot to the channel)
-   - `channels:read`
-   - `groups:read`
-4. Go to **Basic Information → App Credentials** and set the secrets on your Worker:
-   ```bash
-   npx wrangler secret put SLACK_CLIENT_ID
-   npx wrangler secret put SLACK_CLIENT_SECRET
-   ```
+Once deployed, clients **do not need CLI access or Wrangler** to connect ClickUp or Slack. Inside the web UI (**Connections** or directly inside the **Automation Builder**), clients have two options:
+
+1. **Instant Token Setup (No Redirect URLs or OAuth App Credentials Needed):**
+   - **ClickUp:** Paste a Personal API Token (`pk_...` from ClickUp → Settings → Apps).
+   - **Slack:** Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps), add Bot Token Scopes (`chat:write`, `chat:write.public`, `channels:read`, `groups:read`), click **Install to Workspace**, and paste the **Bot User OAuth Token (`xoxb-...`)**.
+2. **Per-Workspace 1-Click OAuth App Setup (From the UI):**
+   - On `/connections` (or inside Step 2 / Step 5 of the Builder), click **Configure 1-click OAuth app**.
+   - Copy the pre-filled **Redirect URL** and **Required Scopes** shown in the dialog into Slack or ClickUp, then paste your **Client ID** and **Client Secret**.
+   - Credentials are stored encrypted per organization in D1 (`AES-256-GCM`).
 
 ---
 
-## 6. Create Your ClickUp OAuth App (Optional if Using a Personal Token)
+## 6. Optional: Global Server-Level OAuth Secrets
 
-For multi-user OAuth:
-1. In ClickUp, click your Workspace avatar → **Settings** → **ClickUp API** (or **Integrations**) → **Create an App**.
-2. Set the **Redirect URL** to:
-   ```
-   https://integration-hub.<your-subdomain>.workers.dev/api/oauth/clickup/callback
-   ```
-3. Copy the Client ID and Client Secret and set them on your Worker:
-   ```bash
-   npx wrangler secret put CLICKUP_CLIENT_ID
-   npx wrangler secret put CLICKUP_CLIENT_SECRET
-   ```
+If you want every organization on your deployment to share one default Slack/ClickUp OAuth app without each client entering their own Client ID & Secret, you can still set server-level secrets with Wrangler:
 
-> **Quick test alternative:** Even before creating a ClickUp OAuth app, you can connect ClickUp using a **Personal API Token** (`pk_...` from ClickUp Settings → Apps) under the expandable **"Or paste a personal API token"** option in the UI.
+- **Slack Redirect URL:** `https://integration-hub.<your-subdomain>.workers.dev/api/oauth/slack/callback` (scopes: `chat:write`, `chat:write.public`, `channels:read`, `groups:read`)
+  ```bash
+  npx wrangler secret put SLACK_CLIENT_ID
+  npx wrangler secret put SLACK_CLIENT_SECRET
+  ```
+- **ClickUp Redirect URL:** `https://integration-hub.<your-subdomain>.workers.dev/api/oauth/clickup/callback`
+  ```bash
+  npx wrangler secret put CLICKUP_CLIENT_ID
+  npx wrangler secret put CLICKUP_CLIENT_SECRET
+  ```
+
 > Note: ClickUp webhooks require a public `https://` callback URL (`localhost` cannot receive real ClickUp webhooks unless exposed via `cloudflared tunnel`).
 
 ---

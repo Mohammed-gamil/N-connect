@@ -9,6 +9,7 @@ use crate::api_types::{
     OptionsResponse, TestConnectionResponse,
 };
 use crate::connectors::clickup::verify_clickup_token;
+use crate::connectors::slack::verify_slack_token;
 use crate::connectors::{get_connector, test_connection as run_connector_test, Cx, ErrorClass};
 use crate::crypto::{
     encrypt_secret, load_master_key, make_credential_aad, new_id, decrypt_secret, Secret,
@@ -68,9 +69,9 @@ pub async fn create_connection(
     }
 
     let kind = match body.application_id {
-        AppId::Clickup => "api_token",
+        AppId::Clickup | AppId::Slack => "api_token",
         AppId::Http => "http_auth",
-        AppId::Slack | AppId::Webhook => {
+        AppId::Webhook => {
             fields.insert(
                 "applicationId".to_string(),
                 "This application does not support token connections.".to_string(),
@@ -118,8 +119,27 @@ pub async fn create_connection(
                 });
             }
         },
+        AppId::Slack => match verify_slack_token(&ctx.env, token).await {
+            Ok((label, ext_id)) => (label, ext_id),
+            Err(e) => {
+                log_structured(
+                    "warn",
+                    "slack_token_verify_failed",
+                    request_id,
+                    Some(&auth.org_id),
+                    None,
+                    Some(&e.internal_detail),
+                );
+                let mut f = BTreeMap::new();
+                f.insert("token".to_string(), e.user_message);
+                return Err(AppError::Validation {
+                    message: "Could not verify the Slack bot token.".to_string(),
+                    fields: Some(f),
+                });
+            }
+        },
         AppId::Http => ("HTTP Credential".to_string(), None),
-        AppId::Slack | AppId::Webhook => unreachable!(),
+        AppId::Webhook => unreachable!(),
     };
 
     let display_name = body

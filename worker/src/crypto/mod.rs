@@ -168,6 +168,10 @@ pub fn make_credential_aad(org_id: &str, cred_id: &str, kind: &str) -> Vec<u8> {
     format!("{org_id}:{cred_id}:{kind}").into_bytes()
 }
 
+pub fn make_oauth_app_aad(org_id: &str, application_id: &str) -> Vec<u8> {
+    format!("{org_id}:oauth_app:{application_id}").into_bytes()
+}
+
 pub fn decode_master_key_b64(b64: &str) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     let raw = Zeroizing::new(
         B64_STD
@@ -290,6 +294,32 @@ mod tests {
 
         // Invalid nonce length MUST fail
         assert!(decrypt_secret(&key, &blob.ciphertext, &[0u8; 8], &aad).is_err());
+
+        // Per-org OAuth app AAD binds ciphertext to both org_id and application_id
+        let oauth_aad = make_oauth_app_aad("org_1", "slack");
+        let oauth_secret = Secret::from_str_slice("slack_client_secret_xyz");
+        let oauth_blob = encrypt_secret(&key, 1, &oauth_secret, &oauth_aad).unwrap();
+        assert_eq!(
+            decrypt_secret(&key, &oauth_blob.ciphertext, &oauth_blob.nonce, &oauth_aad)
+                .unwrap()
+                .expose_str()
+                .unwrap(),
+            "slack_client_secret_xyz"
+        );
+        assert!(decrypt_secret(
+            &key,
+            &oauth_blob.ciphertext,
+            &oauth_blob.nonce,
+            &make_oauth_app_aad("org_2", "slack")
+        )
+        .is_err());
+        assert!(decrypt_secret(
+            &key,
+            &oauth_blob.ciphertext,
+            &oauth_blob.nonce,
+            &make_oauth_app_aad("org_1", "clickup")
+        )
+        .is_err());
     }
 
     #[test]

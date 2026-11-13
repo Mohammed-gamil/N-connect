@@ -147,6 +147,28 @@ export interface FieldOption {
   label: string;
 }
 
+export type OAuthAppConfigSource = "organization" | "server" | "none";
+
+export interface OAuthAppConfigStatus {
+  applicationId: "clickup" | "slack";
+  name: string;
+  configured: boolean;
+  source: OAuthAppConfigSource;
+  clientId: string | null;
+  redirectUrl: string;
+  requiredScopes: string[];
+  docsHint: string;
+  updatedAt: UnixMs | null;
+}
+
+export interface SaveOAuthAppConfigRequest {
+  clientId: string;
+  clientSecret?: string;
+}
+// GET    /api/oauth-apps          -> 200 { apps: OAuthAppConfigStatus[] }
+// PUT    /api/oauth-apps/:appId   body SaveOAuthAppConfigRequest -> 200 OAuthAppConfigStatus
+// DELETE /api/oauth-apps/:appId   -> 204
+
 // ───────────────────────── Workflow definition (persisted, executed) ─────────────────────────
 
 export type FilterOp = "equals" | "not_equals" | "contains" | "not_contains" | "is_empty" | "is_not_empty";

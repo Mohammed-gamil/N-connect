@@ -63,8 +63,8 @@ export const DEFAULT_APPS: AppDefinition[] = [
     authKind: "oauth2",
     tokenAuth: {
       label: "Personal API token",
-      help: "Paste a ClickUp personal API token (pk_...) for quick testing without an OAuth app.",
-      advanced: true,
+      help: "Paste a ClickUp personal API token (pk_...) for instant setup without configuring an OAuth app.",
+      advanced: false,
     },
     triggers: [
       {
@@ -169,6 +169,11 @@ export const DEFAULT_APPS: AppDefinition[] = [
     description: "Post formatted messages to Slack channels.",
     iconUrl: "/icons/slack.svg",
     authKind: "oauth2",
+    tokenAuth: {
+      label: "Bot User OAuth token",
+      help: "Paste a Slack Bot Token (xoxb-...) from OAuth & Permissions for instant setup without configuring OAuth redirect URLs.",
+      advanced: false,
+    },
     triggers: [],
     actions: [
       {

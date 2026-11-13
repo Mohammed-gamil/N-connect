@@ -15,9 +15,11 @@ import type {
   Id,
   LoginRequest,
   Me,
+  OAuthAppConfigStatus,
   Page,
   RegisterRequest,
   SaveAutomationRequest,
+  SaveOAuthAppConfigRequest,
   TestRunResult,
   WebhookInfo,
   WebhookSample,
@@ -245,6 +247,23 @@ export const api = {
       `/api/connections/${connectionId}/options/${encodeURIComponent(fieldKey)}${query}`,
       { signal },
     );
+  },
+
+  // Per-org OAuth app configuration
+  listOAuthApps(signal?: AbortSignal): Promise<{ apps: OAuthAppConfigStatus[] }> {
+    return request<{ apps: OAuthAppConfigStatus[] }>("/api/oauth-apps", { signal });
+  },
+  saveOAuthApp(
+    appId: "clickup" | "slack",
+    body: SaveOAuthAppConfigRequest,
+  ): Promise<OAuthAppConfigStatus> {
+    return request<OAuthAppConfigStatus>(`/api/oauth-apps/${appId}`, {
+      method: "PUT",
+      body,
+    });
+  },
+  deleteOAuthApp(appId: "clickup" | "slack"): Promise<void> {
+    return request<void>(`/api/oauth-apps/${appId}`, { method: "DELETE" });
   },
 
   // Automations

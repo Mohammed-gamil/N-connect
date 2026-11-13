@@ -1025,4 +1025,75 @@ describe("Integration Hub — Full Worker + D1 + Queue + Assets E2E", () => {
       `expected 413 for chunked >256KB webhook body, got ${oversizedResp.status}`,
     );
   });
+
+  it("12. Client self-serve config: per-org OAuth app credentials (tenant-isolated, no secrets leaked) & Slack bot token connect", async () => {
+    // List OAuth apps for Org A (server defaults configured in test harness)
+    const listBefore = await clientA.request("/api/oauth-apps");
+    assert.equal(listBefore.status, 200);
+    assert.equal(listBefore.json.apps.length, 2);
+    const slackBefore = listBefore.json.apps.find((a) => a.applicationId === "slack");
+    assert.ok(slackBefore);
+    assert.equal(slackBefore.configured, true);
+    assert.equal(slackBefore.source, "server");
+    assert.equal(slackBefore.clientId, null);
+    assert.ok(slackBefore.redirectUrl.endsWith("/api/oauth/slack/callback"));
+    assert.ok(slackBefore.requiredScopes.includes("chat:write"));
+
+    // Org A configures a custom Slack OAuth app in the UI/API
+    const saved = await clientA.request("/api/oauth-apps/slack", {
+      method: "PUT",
+      body: {
+        clientId: "orgA_custom_slack_client_id",
+        clientSecret: "orgA_super_secret_do_not_leak",
+      },
+    });
+    assert.equal(saved.status, 200, `PUT /api/oauth-apps/slack failed: ${saved.text}`);
+    assert.equal(saved.json.source, "organization");
+    assert.equal(saved.json.clientId, "orgA_custom_slack_client_id");
+    assert.ok(!saved.text.includes("orgA_super_secret_do_not_leak"), "clientSecret must never be returned");
+
+    // Org B must NOT see Org A's custom clientId
+    const orgBList = await clientB.request("/api/oauth-apps");
+    assert.equal(orgBList.status, 200);
+    const orgBSlack = orgBList.json.apps.find((a) => a.applicationId === "slack");
+    assert.equal(orgBSlack.source, "server");
+    assert.equal(orgBSlack.clientId, null);
+
+    // Org A OAuth start URL uses Org A's custom clientId
+    const customStart = await clientA.request("/api/connections/slack/oauth/start", {
+      method: "POST",
+      body: { returnTo: "/connections" },
+    });
+    assert.equal(customStart.status, 200);
+    const parsedRedirect = new URL(customStart.json.redirectUrl);
+    assert.equal(parsedRedirect.searchParams.get("client_id"), "orgA_custom_slack_client_id");
+
+    // Org A removes its custom OAuth override -> reverts to server default
+    const delRes = await clientA.request("/api/oauth-apps/slack", {
+      method: "DELETE",
+    });
+    assert.equal(delRes.status, 204);
+
+    // Direct Slack Bot Token connection (xoxb-...) without OAuth dance
+    const slTokenConn = await clientA.request("/api/connections", {
+      method: "POST",
+      body: {
+        applicationId: "slack",
+        token: "xoxb-client-direct-bot-token",
+        displayName: "Client Direct Slack Bot",
+      },
+    });
+    assert.equal(slTokenConn.status, 201, `Slack token conn failed: ${slTokenConn.text}`);
+    assert.equal(slTokenConn.json.applicationId, "slack");
+    assert.equal(slTokenConn.json.displayName, "Client Direct Slack Bot");
+    assert.equal(slTokenConn.json.status, "connected");
+    assert.ok(!slTokenConn.text.includes("xoxb-client-direct-bot-token"));
+
+    // Test the newly created Slack bot-token connection live
+    const testSl = await clientA.request(`/api/connections/${slTokenConn.json.id}/test`, {
+      method: "POST",
+    });
+    assert.equal(testSl.status, 200);
+    assert.equal(testSl.json.ok, true);
+  });
 });

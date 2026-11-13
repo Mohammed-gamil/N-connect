@@ -222,6 +222,37 @@ async fn slack_call_json(
     Ok(val)
 }
 
+/// Verifies a Slack token (OAuth or Bot User OAuth token `xoxb-...`) via `POST /auth.test`.
+/// Returns `(display_name, external_account_id)`.
+pub async fn verify_slack_token(
+    env: &Env,
+    token: &str,
+) -> Result<(String, Option<String>), ConnectorError> {
+    let base = api_base(env);
+    let url = format!("{base}/auth.test");
+    let val = slack_call_json(
+        worker::Method::Post,
+        &url,
+        Some(token),
+        Some("application/x-www-form-urlencoded"),
+        None,
+    )
+    .await?;
+
+    let team_id = val["team_id"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let team_name = val["team"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Slack Workspace");
+
+    Ok((format!("{team_name} (Slack)"), team_id))
+}
+
 impl SlackConnector {
     pub async fn test_connection(
         &self,
@@ -280,26 +311,32 @@ impl Connector for SlackConnector {
         cx: &Cx<'_>,
         code: &str,
     ) -> Result<NewConnection, ConnectorError> {
-        let client_id = get_env_secret_or_var(cx.env, "SLACK_CLIENT_ID").ok_or_else(|| {
-            ConnectorError::permanent(
-                "Slack OAuth is not configured on this server.",
-                "missing SLACK_CLIENT_ID",
-            )
-        })?;
-        let client_secret =
-            get_env_secret_or_var(cx.env, "SLACK_CLIENT_SECRET").ok_or_else(|| {
-                ConnectorError::permanent(
-                    "Slack OAuth is not configured on this server.",
-                    "missing SLACK_CLIENT_SECRET",
-                )
-            })?;
+        let (client_id, client_secret_val, _) =
+            crate::routes::oauth::resolve_oauth_credentials(cx.env, cx.org_id, AppId::Slack)
+                .await
+                .map_err(|e| {
+                    ConnectorError::permanent(
+                        "Could not load Slack OAuth configuration.",
+                        format!("resolve slack oauth failed: {e:?}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    ConnectorError::permanent(
+                        "Slack OAuth is not configured yet. Add your Slack Client ID & Secret in Connections.",
+                        "missing SLACK_CLIENT_ID / SLACK_CLIENT_SECRET",
+                    )
+                })?;
+        let client_secret = client_secret_val
+            .expose_str()
+            .map_err(|_| ConnectorError::permanent("Saved Slack Client Secret is invalid.", "invalid utf8 client_secret"))?;
+
         let app_origin = get_env_secret_or_var(cx.env, "APP_ORIGIN")
             .unwrap_or_else(|| "http://localhost:8787".to_string());
         let redirect_uri = format!("{}/api/oauth/slack/callback", app_origin.trim_end_matches('/'));
 
         let form_body = form_urlencoded::Serializer::new(String::new())
             .append_pair("client_id", &client_id)
-            .append_pair("client_secret", &client_secret)
+            .append_pair("client_secret", client_secret)
             .append_pair("code", code)
             .append_pair("redirect_uri", &redirect_uri)
             .finish();

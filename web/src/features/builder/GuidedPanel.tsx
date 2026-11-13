@@ -10,6 +10,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Settings2,
   Trash2,
 } from "lucide-react";
 import { AppIcon } from "../../components/AppIcon";
@@ -29,6 +30,7 @@ import type {
   FieldDefinition,
   FieldOption,
   Filter,
+  OAuthAppConfigStatus,
   TestRunResult,
   VariableDefinition,
 } from "../../contracts";
@@ -40,6 +42,8 @@ import {
 import { getAppById, getTriggerVariables, getVisibleApps } from "../../canvas/appMeta";
 import type { ApplicationNode, CanvasState } from "../../canvas/types";
 import { api, ApiClientError } from "../../lib/api";
+import { OAuthAppSetupDialog } from "../connections/OAuthAppSetupDialog";
+import { TOKEN_CONNECT_META, TokenGuideBox } from "../connections/TokenGuideBox";
 import { FilterEditor } from "./FilterEditor";
 import { HttpActionSection } from "./HttpActionSection";
 import { insertVariableIntoInput, VariableChips } from "./VariableChips";
@@ -63,6 +67,7 @@ export interface GuidedPanelProps {
   state: CanvasState;
   apps: AppDefinition[];
   connections: Connection[];
+  oauthApps?: OAuthAppConfigStatus[];
   advancedMode: boolean;
   activeStep: GuidedStep;
   fieldErrors: Record<string, string>;
@@ -77,6 +82,7 @@ export interface GuidedPanelProps {
   onChangeFilters: (filters: Filter[]) => void;
   onRemoveNode: (nodeId: string) => void;
   onStartOAuth: (appId: AppId) => Promise<void>;
+  onOAuthAppUpdated?: (updated: OAuthAppConfigStatus) => void;
   onConnectionCreated: (conn: Connection) => void;
   onEnsureSavedDraft: () => Promise<string | null>;
   onActivateOrPause: () => Promise<void>;
@@ -96,6 +102,7 @@ export const GuidedPanel: React.FC<GuidedPanelProps> = ({
   state,
   apps,
   connections,
+  oauthApps = [],
   advancedMode,
   activeStep,
   fieldErrors,
@@ -110,6 +117,7 @@ export const GuidedPanel: React.FC<GuidedPanelProps> = ({
   onChangeFilters,
   onRemoveNode,
   onStartOAuth,
+  onOAuthAppUpdated,
   onConnectionCreated,
   onEnsureSavedDraft,
   onActivateOrPause,
@@ -123,6 +131,9 @@ export const GuidedPanel: React.FC<GuidedPanelProps> = ({
   const [tokenSecret, setTokenSecret] = React.useState("");
   const [savingToken, setSavingToken] = React.useState(false);
   const [oauthBusyApp, setOauthBusyApp] = React.useState<AppId | null>(null);
+  const [oauthSetupAppId, setOauthSetupAppId] = React.useState<
+    "clickup" | "slack" | null
+  >(null);
 
   const [dynamicOptions, setDynamicOptions] = React.useState<
     Record<string, { loading: boolean; options: FieldOption[]; error?: string }>
@@ -410,64 +421,131 @@ export const GuidedPanel: React.FC<GuidedPanelProps> = ({
           </div>
         )}
 
-        {app.authKind === "oauth2" && (
-          <div className="space-y-3">
-            <Button
-              className="w-full"
-              size="md"
-              loading={oauthBusyApp === app.id}
-              onClick={() => void handleOAuthClick(app.id)}
-            >
-              <ExternalLink className="h-4 w-4" aria-hidden="true" />
-              {matchingConnections.length > 0
-                ? `Connect another ${app.name} account`
-                : `Connect ${app.name}`}
-            </Button>
+        {app.authKind === "oauth2" && (() => {
+          const oauthAppId =
+            app.id === "clickup" || app.id === "slack" ? app.id : null;
+          const oauthStatus = oauthAppId
+            ? oauthApps.find((a) => a.applicationId === oauthAppId)
+            : undefined;
+          const isOAuthConfigured = oauthStatus ? oauthStatus.configured : true;
+          const tokenMeta = oauthAppId ? TOKEN_CONNECT_META[oauthAppId] : null;
+          const tokenToggleLabel =
+            app.id === "slack"
+              ? "Or paste a Slack Bot token (xoxb-...)"
+              : "Or paste a personal API token (pk_...)";
 
-            {app.tokenAuth && (
-              <div className="space-y-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowTokenForm((v) => !v)}
-                  className="text-xs font-medium text-ink-secondary underline-offset-2 hover:text-ink hover:underline"
-                >
-                  {showTokenForm
-                    ? "Hide personal API token"
-                    : "Or paste a personal API token"}
-                </button>
-
-                {showTokenForm && (
-                  <div className="space-y-2.5 rounded-xl border border-border bg-subtle/50 p-3">
-                    <p className="text-[11px] text-ink-secondary">
-                      {app.tokenAuth.help}
-                    </p>
-                    <Input
-                      placeholder="Account label (optional)"
-                      value={tokenLabel}
-                      onChange={(e) => setTokenLabel(e.target.value)}
-                      className="h-8 text-xs"
-                    />
-                    <Input
-                      type="password"
-                      placeholder="Paste personal API token..."
-                      value={tokenSecret}
-                      onChange={(e) => setTokenSecret(e.target.value)}
-                      className="h-8 text-xs"
-                    />
+          return (
+            <div className="space-y-3">
+              {isOAuthConfigured ? (
+                <div className="space-y-2">
+                  <Button
+                    className="w-full"
+                    size="md"
+                    loading={oauthBusyApp === app.id}
+                    onClick={() => void handleOAuthClick(app.id)}
+                  >
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    {matchingConnections.length > 0
+                      ? `Connect another ${app.name} account`
+                      : `Connect ${app.name}`}
+                  </Button>
+                  {oauthStatus && oauthAppId && (
                     <Button
+                      variant="ghost"
                       size="sm"
-                      loading={savingToken}
-                      onClick={() => void handleCreateToken(app, node)}
+                      className="w-full text-xs text-ink-secondary"
+                      onClick={() => setOauthSetupAppId(oauthAppId)}
                     >
-                      <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                      Save token
+                      <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      Configure {app.name} OAuth app
                     </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2 rounded-xl border border-border bg-subtle/40 p-3">
+                  <p className="text-xs font-medium text-ink">
+                    Quick setup for {app.name}
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-ink-secondary">
+                    Paste a token directly for instant setup, or configure your workspace&apos;s 1-click OAuth app.
+                  </p>
+                  <div className="flex flex-col gap-2 pt-1">
+                    {app.tokenAuth && (
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        onClick={() => setShowTokenForm(true)}
+                      >
+                        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        {app.id === "slack"
+                          ? "Paste Bot token (xoxb-...)"
+                          : "Paste API token (pk_...)"}
+                      </Button>
+                    )}
+                    {oauthAppId && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => setOauthSetupAppId(oauthAppId)}
+                      >
+                        <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        Configure 1-click OAuth app
+                      </Button>
+                    )}
                   </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+                </div>
+              )}
+
+              {app.tokenAuth && (
+                <div className="space-y-2 pt-1">
+                  {(isOAuthConfigured || showTokenForm) && (
+                    <button
+                      type="button"
+                      onClick={() => setShowTokenForm((v) => !v)}
+                      className="text-xs font-medium text-ink-secondary underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      {showTokenForm ? "Hide token form" : tokenToggleLabel}
+                    </button>
+                  )}
+
+                  {showTokenForm && (
+                    <div className="space-y-2.5 rounded-xl border border-border bg-subtle/50 p-3">
+                      {oauthAppId && (
+                        <TokenGuideBox appId={oauthAppId} compact />
+                      )}
+                      <Input
+                        placeholder={
+                          tokenMeta?.namePlaceholder ?? "Account label (optional)"
+                        }
+                        value={tokenLabel}
+                        onChange={(e) => setTokenLabel(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                      <Input
+                        type="password"
+                        placeholder={
+                          tokenMeta?.tokenPlaceholder ?? "Paste API token..."
+                        }
+                        value={tokenSecret}
+                        onChange={(e) => setTokenSecret(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                      <Button
+                        size="sm"
+                        loading={savingToken}
+                        onClick={() => void handleCreateToken(app, node)}
+                      >
+                        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        Verify & Save token
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {app.authKind === "api_token" && (
           <div className="space-y-2.5 rounded-xl border border-border bg-subtle/50 p-3">
@@ -1199,6 +1277,22 @@ export const GuidedPanel: React.FC<GuidedPanelProps> = ({
           </div>
         )}
       </div>
+
+      <OAuthAppSetupDialog
+        open={Boolean(oauthSetupAppId)}
+        status={
+          oauthSetupAppId
+            ? (oauthApps.find((a) => a.applicationId === oauthSetupAppId) ?? null)
+            : null
+        }
+        onOpenChange={(open) => {
+          if (!open) setOauthSetupAppId(null);
+        }}
+        onSaved={(updated) => onOAuthAppUpdated?.(updated)}
+        onSaveAndConnect={async (appId) => {
+          await handleOAuthClick(appId);
+        }}
+      />
     </aside>
   );
 };

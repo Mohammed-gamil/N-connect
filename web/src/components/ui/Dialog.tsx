@@ -20,6 +20,8 @@ export function Dialog({
   describedBy,
 }: DialogProps) {
   const panelRef = React.useRef<HTMLDivElement>(null);
+  const onOpenChangeRef = React.useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
 
   React.useEffect(() => {
     if (!open) return;
@@ -30,7 +32,7 @@ export function Dialog({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onOpenChange(false);
+        onOpenChangeRef.current(false);
       }
     };
 
@@ -39,7 +41,7 @@ export function Dialog({
       document.removeEventListener("keydown", handleKeyDown);
       previouslyFocused?.focus?.();
     };
-  }, [open, onOpenChange]);
+  }, [open]);
 
   if (!open) return null;
 
