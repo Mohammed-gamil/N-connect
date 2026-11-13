@@ -48,10 +48,10 @@ async function main() {
   console.log("==> Building web SPA...");
   await runCommand("pnpm", ["--dir", path.join(ROOT, "web"), "build"], ROOT);
 
-  console.log("==> Building Rust Worker (e2e preview mode)...");
+  console.log("==> Building Rust Worker (e2e preview mode, --no-opt)...");
   await runCommand(
     "node",
-    [path.join(ROOT, "scripts/build-worker.mjs"), "--", "--features", "e2e"],
+    [path.join(ROOT, "scripts/build-worker.mjs"), "--no-opt", "--", "--features", "e2e"],
     path.join(ROOT, "worker"),
   );
 
