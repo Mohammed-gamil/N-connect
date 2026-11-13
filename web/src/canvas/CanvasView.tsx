@@ -913,9 +913,9 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
   );
 
   return (
-    <div className="relative flex flex-1 flex-col items-center justify-center overflow-auto bg-canvas p-3 sm:p-4">
+    <div className="relative flex flex-1 flex-col items-stretch justify-center overflow-auto bg-canvas p-3 sm:p-4">
       <div
-        className="w-full max-w-[880px] overflow-x-auto rounded-xl border border-border bg-surface p-2 shadow-2xs"
+        className="flex w-full flex-1 items-center justify-center overflow-x-auto rounded-xl border border-border bg-surface p-2 shadow-2xs"
         style={{
           backgroundImage: "radial-gradient(#d4d4d8 1px, transparent 1px)",
           backgroundSize: "20px 20px",

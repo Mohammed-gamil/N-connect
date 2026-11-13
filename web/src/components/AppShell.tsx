@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ChevronDown, LogOut, Menu, Plus, X, Zap } from "lucide-react";
 import { useAuth } from "../features/auth/AuthContext";
 import { cn } from "../lib/utils";
@@ -14,6 +14,9 @@ const NAV_ITEMS = [
 export function AppShell() {
   const { user, organization, logout } = useAuth();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const isWideRoute =
+    pathname.startsWith("/automations") || pathname.startsWith("/connections");
 
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const [userMenuOpen, setUserMenuOpen] = React.useState(false);
@@ -61,7 +64,12 @@ export function AppShell() {
   return (
     <div className="flex min-h-screen flex-col bg-canvas text-ink">
       <header className="sticky top-0 z-30 border-b border-border bg-surface/95 backdrop-blur-xs">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-4 px-4 sm:px-6">
+        <div
+          className={cn(
+            "mx-auto flex h-14 items-center justify-between gap-4 px-4 sm:px-6",
+            isWideRoute ? "max-w-none lg:px-8" : "max-w-5xl",
+          )}
+        >
           <div className="flex items-center gap-6">
             <Link
               to="/"
@@ -231,7 +239,12 @@ export function AppShell() {
         )}
       </header>
 
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
+      <main
+        className={cn(
+          "mx-auto w-full flex-1 px-4 py-6 sm:px-6",
+          isWideRoute ? "max-w-none lg:px-8" : "max-w-5xl py-8",
+        )}
+      >
         <Outlet />
       </main>
     </div>

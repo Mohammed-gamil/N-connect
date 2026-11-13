@@ -810,7 +810,7 @@ export function BuilderPage() {
       </div>
 
       {/* Main Split View: Dragology Canvas + Guided Panel */}
-      <div className="flex min-h-[540px] flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xs lg:flex-row">
+      <div className="flex min-h-[540px] flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xs lg:min-h-[calc(100vh-14rem)] lg:flex-row">
         <div className="flex min-w-0 flex-1 flex-col">
           <CanvasView
             state={state}
