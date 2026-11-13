@@ -8,6 +8,7 @@
     "build:worker": ". scripts/env.sh && cd worker && worker-build --release",
     "build": "pnpm build:web && pnpm build:worker",
     "dev": "pnpm build:web && wrangler dev",
+    "preview:local": "node scripts/dev-preview.mjs",
     "db:migrate:local": "wrangler d1 migrations apply integration-hub --local",
     "test:worker": ". scripts/env.sh && cd worker && cargo test",
     "test:web": "pnpm --dir web test",
