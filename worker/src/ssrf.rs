@@ -40,7 +40,6 @@ pub struct SafeFetchResponse {
 #[derive(Debug, Deserialize)]
 struct DohResponse {
     #[serde(rename = "Status")]
-    #[allow(dead_code)]
     status: Option<u32>,
     #[serde(rename = "Answer")]
     answer: Option<Vec<DohAnswer>>,
@@ -261,9 +260,14 @@ pub fn validate_url_syntax_and_host(raw_url: &str, app_origin: &str) -> Result<U
 }
 
 /// Parses DNS-over-HTTPS JSON `Answer` entries and returns resolved IP addresses.
+/// Fails closed if `Status` is missing or indicates a resolver error (anything other than 0=NOERROR or 3=NXDOMAIN).
 pub fn parse_doh_ips(json_bytes: &[u8]) -> Result<Vec<IpAddr>, SsrfError> {
     let doh: DohResponse =
         serde_json::from_slice(json_bytes).map_err(|_| SsrfError::DnsResolutionFailed)?;
+    match doh.status {
+        Some(0) | Some(3) => {}
+        _ => return Err(SsrfError::DnsResolutionFailed),
+    }
     let mut ips = Vec::new();
     if let Some(answers) = doh.answer {
         for ans in answers {
@@ -348,13 +352,15 @@ async fn resolve_domain_and_validate(domain: &str) -> Result<(), SsrfError> {
             .await
             .map_err(|_| SsrfError::DnsResolutionFailed)?;
 
-        if resp.status_code() == 200 {
-            if let Ok(bytes) = resp.bytes().await {
-                if let Ok(ips) = parse_doh_ips(&bytes) {
-                    all_ips.extend(ips);
-                }
-            }
+        if resp.status_code() != 200 {
+            return Err(SsrfError::DnsResolutionFailed);
         }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|_| SsrfError::DnsResolutionFailed)?;
+        let ips = parse_doh_ips(&bytes)?;
+        all_ips.extend(ips);
     }
 
     validate_resolved_ips(&all_ips)
@@ -633,9 +639,12 @@ mod tests {
             "http://239.255.255.255/",
             "http://240.0.0.1/",
             "http://255.255.255.255/",
-            // Decimal / hex encodings parsed by url crate
+            // Decimal / hex / octal encodings parsed by url crate
             "http://2130706433/",
             "http://0x7f000001/",
+            "http://0177.0.0.1/",
+            "http://017700000001/",
+            "  http://127.0.0.1/  ",
         ];
         for url in blocked_ips {
             assert_eq!(
@@ -664,6 +673,7 @@ mod tests {
             "http://[febf::1]/",
             "http://[ff02::1]/",
             "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:7f00:1]/",
             "http://[::ffff:10.0.0.1]/",
             "http://[::ffff:100.64.0.1]/",
             "http://[::ffff:169.254.169.254]/",
@@ -702,6 +712,12 @@ mod tests {
         let ips_empty = parse_doh_ips(empty_doh).unwrap();
         assert_eq!(
             validate_resolved_ips(&ips_empty),
+            Err(SsrfError::DnsResolutionFailed)
+        );
+
+        let servfail_doh = br#"{"Status": 2, "Answer": [{"type": 1, "data": "93.184.216.34"}]}"#;
+        assert_eq!(
+            parse_doh_ips(servfail_doh),
             Err(SsrfError::DnsResolutionFailed)
         );
 

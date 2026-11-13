@@ -15,22 +15,19 @@ struct RateLimitRow {
     window_start: i64,
 }
 
-pub fn client_ip(req: &Request) -> String {
-    if let Ok(Some(ip)) = req.headers().get("CF-Connecting-IP") {
+pub fn extract_client_ip(cf_connecting_ip: Option<&str>) -> String {
+    if let Some(ip) = cf_connecting_ip {
         let trimmed = ip.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
     }
-    if let Ok(Some(xff)) = req.headers().get("X-Forwarded-For") {
-        if let Some(first) = xff.split(',').next() {
-            let trimmed = first.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
-    }
     "unknown".to_string()
+}
+
+pub fn client_ip(req: &Request) -> String {
+    let cf_ip = req.headers().get("CF-Connecting-IP").ok().flatten();
+    extract_client_ip(cf_ip.as_deref())
 }
 
 pub fn login_rate_limit_key(email: &str, ip: &str) -> String {
@@ -94,4 +91,25 @@ pub async fn clear_limit(db: &D1Database, key: &str) -> Result<(), DbError> {
         .run()
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_only_cf_connecting_ip_or_unknown() {
+        assert_eq!(extract_client_ip(Some("203.0.113.42")), "203.0.113.42");
+        assert_eq!(extract_client_ip(Some("  2001:db8::1  ")), "2001:db8::1");
+        assert_eq!(extract_client_ip(Some("   ")), "unknown");
+        assert_eq!(extract_client_ip(None), "unknown");
+    }
+
+    #[test]
+    fn normalizes_login_rate_limit_key_email() {
+        assert_eq!(
+            login_rate_limit_key("  Alice@Example.COM ", "198.51.100.7"),
+            "login:198.51.100.7:alice@example.com"
+        );
+    }
 }

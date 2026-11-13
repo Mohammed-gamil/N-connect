@@ -98,6 +98,14 @@ fn value_as_id_str(v: &Value) -> Option<String> {
     None
 }
 
+pub fn is_safe_clickup_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 pub fn clickup_dedup_key(raw: &Value, raw_body: &[u8]) -> String {
     let webhook_id = value_as_id_str(&raw["webhook_id"]).unwrap_or_else(|| "unknown".to_string());
     let event = raw["event"]
@@ -576,6 +584,12 @@ impl Connector for ClickUpConnector {
                             "missing parent workspaceId",
                         )
                     })?;
+                if !is_safe_clickup_id(workspace_id) {
+                    return Err(ConnectorError::user_fixable(
+                        "Invalid ClickUp workspace ID.",
+                        "unsafe parent workspaceId",
+                    ));
+                }
 
                 let spaces_val = clickup_get_json(
                     &format!("{base}/team/{workspace_id}/space?archived=false"),
@@ -588,7 +602,7 @@ impl Connector for ClickUpConnector {
                 let mut extra_folder_fetches = 0usize;
 
                 for space in spaces.into_iter().take(MAX_SPACES_TO_FETCH) {
-                    let Some(space_id) = value_as_id_str(&space["id"]) else {
+                    let Some(space_id) = value_as_id_str(&space["id"]).filter(|s| is_safe_clickup_id(s)) else {
                         continue;
                     };
                     let space_name = space["name"].as_str().unwrap_or("Space");
@@ -633,7 +647,7 @@ impl Connector for ClickUpConnector {
                                     }
                                 }
                             } else if extra_folder_fetches < MAX_EXTRA_FOLDER_FETCHES {
-                                if let Some(fid) = value_as_id_str(&folder["id"]) {
+                                if let Some(fid) = value_as_id_str(&folder["id"]).filter(|s| is_safe_clickup_id(s)) {
                                     extra_folder_fetches += 1;
                                     let fl_val = clickup_get_json(
                                         &format!("{base}/folder/{fid}/list?archived=false"),
@@ -692,6 +706,12 @@ impl Connector for ClickUpConnector {
                     "missing trigger.configuration.workspaceId",
                 )
             })?;
+        if !is_safe_clickup_id(workspace_id) {
+            return Err(ConnectorError::user_fixable(
+                "Invalid ClickUp workspace ID.",
+                "unsafe trigger.configuration.workspaceId",
+            ));
+        }
 
         let clickup_event = map_trigger_to_clickup_event(&trigger.event)?;
         let mut payload = json!({
@@ -765,6 +785,12 @@ impl Connector for ClickUpConnector {
         let Some(ref webhook_id) = sub.external_webhook_id else {
             return Ok(());
         };
+        if !is_safe_clickup_id(webhook_id) {
+            return Err(ConnectorError::permanent(
+                "Invalid ClickUp webhook ID.",
+                "unsafe external_webhook_id",
+            ));
+        }
         let token = creds
             .expose_str()
             .map_err(|_| ConnectorError::needs_reconnect("Saved token is corrupted.", "invalid utf8"))?;
@@ -813,7 +839,7 @@ impl Connector for ClickUpConnector {
             return Ok(None);
         }
 
-        let Some(task_id) = value_as_id_str(&raw["task_id"]) else {
+        let Some(task_id) = value_as_id_str(&raw["task_id"]).filter(|s| is_safe_clickup_id(s)) else {
             return Ok(None);
         };
 
@@ -1005,5 +1031,18 @@ mod tests {
         let closed_norm = normalize_clickup_payload("task.completed", None, &closed_raw, &task)
             .expect("closed status should trigger task.completed");
         assert_eq!(closed_norm.trigger_summary, "Task \"Ship v2\" was completed");
+    }
+
+    #[test]
+    fn rejects_unsafe_clickup_ids_with_path_traversal_or_query_chars() {
+        assert!(is_safe_clickup_id("9012345"));
+        assert!(is_safe_clickup_id("8688abc12"));
+        assert!(is_safe_clickup_id("DEV-123_abc"));
+        assert!(!is_safe_clickup_id(""));
+        assert!(!is_safe_clickup_id("../../user"));
+        assert!(!is_safe_clickup_id("9012345/space"));
+        assert!(!is_safe_clickup_id("9012345?archived=true"));
+        assert!(!is_safe_clickup_id("9012345#frag"));
+        assert!(!is_safe_clickup_id("9012345\\x"));
     }
 }

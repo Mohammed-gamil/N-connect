@@ -195,17 +195,62 @@ pub async fn read_body_limited(req: &mut Request, max_bytes: usize) -> Result<Ve
         }
     }
 
-    let bytes = req
-        .bytes()
-        .await
-        .map_err(|_| AppError::BadRequest("Unable to read request body.".to_string()))?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
 
-    if bytes.len() > max_bytes {
-        return Err(AppError::PayloadTooLarge(format!(
-            "Request body exceeds {max_bytes} byte limit."
-        )));
+        let Some(stream) = req.inner().body() else {
+            return Ok(Vec::new());
+        };
+        let reader: web_sys::ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
+        let mut buf = Vec::new();
+        loop {
+            let chunk_js = JsFuture::from(reader.read())
+                .await
+                .map_err(|_| AppError::BadRequest("Unable to read request body.".to_string()))?;
+            let done = js_sys::Reflect::get(&chunk_js, &JsValue::from_str("done"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if done {
+                break;
+            }
+            let val = js_sys::Reflect::get(&chunk_js, &JsValue::from_str("value"))
+                .map_err(|_| AppError::BadRequest("Unable to read request body.".to_string()))?;
+            if !val.is_undefined() && !val.is_null() {
+                let arr = js_sys::Uint8Array::new(&val);
+                let len = arr.length() as usize;
+                if buf.len().saturating_add(len) > max_bytes {
+                    let _ = reader.cancel();
+                    return Err(AppError::PayloadTooLarge(format!(
+                        "Request body exceeds {max_bytes} byte limit."
+                    )));
+                }
+                if len > 0 {
+                    let old_len = buf.len();
+                    buf.resize(old_len + len, 0);
+                    arr.copy_to(&mut buf[old_len..]);
+                }
+            }
+        }
+        Ok(buf)
     }
-    Ok(bytes)
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes = req
+            .bytes()
+            .await
+            .map_err(|_| AppError::BadRequest("Unable to read request body.".to_string()))?;
+
+        if bytes.len() > max_bytes {
+            return Err(AppError::PayloadTooLarge(format!(
+                "Request body exceeds {max_bytes} byte limit."
+            )));
+        }
+        Ok(bytes)
+    }
 }
 
 pub async fn read_json_limited<T: DeserializeOwned>(

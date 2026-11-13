@@ -40,6 +40,18 @@ struct ExistingConnRow {
     credential_id: String,
 }
 
+fn invalid_return_to_error() -> AppError {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "returnTo".to_string(),
+        "Return path must be a relative path starting with '/'.".to_string(),
+    );
+    AppError::Validation {
+        message: "Invalid return path.".to_string(),
+        fields: Some(fields),
+    }
+}
+
 pub fn sanitize_return_to(raw: Option<&str>) -> Result<String, AppError> {
     let Some(val) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok("/connections".to_string());
@@ -48,20 +60,21 @@ pub fn sanitize_return_to(raw: Option<&str>) -> Result<String, AppError> {
         || !val.starts_with('/')
         || val.starts_with("//")
         || val.starts_with("/\\")
-        || val.contains('\r')
-        || val.contains('\n')
-        || val.contains('\0')
+        || val.chars().any(|c| c.is_control())
         || val.contains('\\')
     {
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "returnTo".to_string(),
-            "Return path must be a relative path starting with '/'.".to_string(),
-        );
-        return Err(AppError::Validation {
-            message: "Invalid return path.".to_string(),
-            fields: Some(fields),
-        });
+        return Err(invalid_return_to_error());
+    }
+    let probe = Url::parse(&format!("https://origin.invalid{val}"))
+        .map_err(|_| invalid_return_to_error())?;
+    if probe.scheme() != "https"
+        || probe.host_str() != Some("origin.invalid")
+        || !probe.username().is_empty()
+        || probe.password().is_some()
+        || probe.path().starts_with("//")
+        || !probe.path().starts_with('/')
+    {
+        return Err(invalid_return_to_error());
     }
     Ok(val.to_string())
 }
@@ -455,6 +468,9 @@ mod tests {
         assert!(sanitize_return_to(Some("https://evil.com")).is_err());
         assert!(sanitize_return_to(Some("//evil.com")).is_err());
         assert!(sanitize_return_to(Some("/\\evil.com")).is_err());
+        assert!(sanitize_return_to(Some("/\t/evil.com")).is_err());
+        assert!(sanitize_return_to(Some("/..//evil.com")).is_err());
+        assert!(sanitize_return_to(Some("/a/../..//evil.com")).is_err());
         assert!(sanitize_return_to(Some("/connections\r\nSet-Cookie: a=b")).is_err());
     }
 }

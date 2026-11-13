@@ -221,6 +221,23 @@ describe("Integration Hub — Full Worker + D1 + Queue + Assets E2E", () => {
     });
     assert.equal(limited.status, 429);
     assert.equal(limited.json?.error?.code, "rate_limited");
+
+    // 1f. Rotating spoofable X-Forwarded-For headers must NOT bypass rate limiting
+    for (let i = 0; i < 5; i++) {
+      const r = await clientA.request("/api/auth/login", {
+        method: "POST",
+        headers: { "X-Forwarded-For": `198.51.100.${i + 1}` },
+        body: { email: "xff-spoof-check@example.com", password: "wrong-password" },
+      });
+      assert.equal(r.status, 401);
+    }
+    const xffLimited = await clientA.request("/api/auth/login", {
+      method: "POST",
+      headers: { "X-Forwarded-For": "203.0.113.99" },
+      body: { email: "xff-spoof-check@example.com", password: "wrong-password" },
+    });
+    assert.equal(xffLimited.status, 429);
+    assert.equal(xffLimited.json?.error?.code, "rate_limited");
   });
 
   it("2. Connect ClickUp (personal token) & Slack (OAuth flow), verify no secrets leak in /api/connections", async () => {
@@ -834,5 +851,178 @@ describe("Integration Hub — Full Worker + D1 + Queue + Assets E2E", () => {
         `expected 404 for Org B ${method} ${path}, got ${res.status}: ${res.text}`,
       );
     }
+
+    // Create an HTTP credential in Org A and verify Org B cannot reference any Org A connectionId
+    const orgAHttpConn = await clientA.request("/api/connections", {
+      method: "POST",
+      body: {
+        applicationId: "http",
+        token: "orgA-secret-bearer-token",
+        displayName: "Org A HTTP Bearer",
+      },
+    });
+    assert.equal(orgAHttpConn.status, 201, `Org A HTTP conn failed: ${orgAHttpConn.text}`);
+    const orgAHttpConnId = orgAHttpConn.json.id;
+
+    const crossTenantCreateTrigger = await clientB.request("/api/automations", {
+      method: "POST",
+      body: {
+        name: "Cross-tenant trigger bind",
+        definition: {
+          version: 1,
+          trigger: {
+            application: "clickup",
+            event: "task.created",
+            connectionId: clickupConnId,
+            configuration: {},
+          },
+          filters: [],
+          action: {
+            application: "http",
+            event: "http.request",
+            connectionId: null,
+            configuration: {},
+          },
+        },
+      },
+    });
+    assert.equal(crossTenantCreateTrigger.status, 422);
+    assert.ok(crossTenantCreateTrigger.json?.error?.fields?.["trigger.connectionId"]);
+
+    const crossTenantCreateAction = await clientB.request("/api/automations", {
+      method: "POST",
+      body: {
+        name: "Cross-tenant action bind",
+        definition: {
+          version: 1,
+          trigger: {
+            application: "webhook",
+            event: "webhook.received",
+            connectionId: null,
+            configuration: { verification: "none" },
+          },
+          filters: [],
+          action: {
+            application: "slack",
+            event: "message.send",
+            connectionId: slackConnId,
+            configuration: {},
+          },
+        },
+      },
+    });
+    assert.equal(crossTenantCreateAction.status, 422);
+    assert.ok(crossTenantCreateAction.json?.error?.fields?.["action.connectionId"]);
+
+    const orgBDraft = await clientB.request("/api/automations", {
+      method: "POST",
+      body: {
+        name: "Org B Clean Draft",
+        definition: {
+          version: 1,
+          trigger: {
+            application: "webhook",
+            event: "webhook.received",
+            connectionId: null,
+            configuration: { verification: "none" },
+          },
+          filters: [],
+          action: {
+            application: "http",
+            event: "http.request",
+            connectionId: null,
+            configuration: { method: "POST", url: "https://example.com/hook", authType: "none" },
+          },
+        },
+      },
+    });
+    assert.equal(orgBDraft.status, 201);
+
+    const crossTenantUpdate = await clientB.request(`/api/automations/${orgBDraft.json.id}`, {
+      method: "PUT",
+      body: {
+        name: "Org B Hijack HTTP Cred",
+        definition: {
+          version: 1,
+          trigger: {
+            application: "webhook",
+            event: "webhook.received",
+            connectionId: null,
+            configuration: { verification: "none" },
+          },
+          filters: [],
+          action: {
+            application: "http",
+            event: "http.request",
+            connectionId: orgAHttpConnId,
+            configuration: { method: "POST", url: "https://example.com/hook", authType: "bearer" },
+          },
+        },
+      },
+    });
+    assert.equal(crossTenantUpdate.status, 422);
+    assert.ok(crossTenantUpdate.json?.error?.fields?.["action.connectionId"]);
+
+    const crossTenantHttpTest = await clientB.request("/api/http/test", {
+      method: "POST",
+      body: {
+        method: "GET",
+        url: "https://example.com/hook",
+        headers: [],
+        auth: { type: "bearer", credentialConnectionId: orgAHttpConnId },
+        body: null,
+        sampleVariables: {},
+      },
+    });
+    assert.equal(crossTenantHttpTest.status, 404);
+    assert.equal(crossTenantHttpTest.json?.error?.code, "not_found");
+  });
+
+  it("11. Security hardening: OAuth returnTo rejects open redirects and webhook enforces 256 KB cap on chunked bodies", async () => {
+    const badReturnTos = [
+      "https://evil.com",
+      "//evil.com",
+      "/\\evil.com",
+      "/\t/evil.com",
+      "/..//evil.com",
+      "/a/../..//evil.com",
+    ];
+    for (const returnTo of badReturnTos) {
+      const res = await clientA.request("/api/connections/slack/oauth/start", {
+        method: "POST",
+        body: { returnTo },
+      });
+      assert.equal(
+        res.status,
+        422,
+        `expected 422 for open-redirect returnTo=${JSON.stringify(returnTo)}, got ${res.status}: ${res.text}`,
+      );
+      assert.ok(res.json?.error?.fields?.returnTo);
+    }
+
+    // Stream > 256 KB in chunks without Content-Length to verify streaming body limit
+    const chunk = new Uint8Array(64 * 1024).fill(0x61); // 'a'
+    let chunksSent = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (chunksSent < 5) {
+          chunksSent += 1; // 5 * 64 KB = 320 KB > 256 KB
+          controller.enqueue(chunk);
+        } else {
+          controller.close();
+        }
+      },
+    });
+    const oversizedResp = await fetch(cuWebhookEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: stream,
+      duplex: "half",
+    });
+    assert.equal(
+      oversizedResp.status,
+      413,
+      `expected 413 for chunked >256KB webhook body, got ${oversizedResp.status}`,
+    );
   });
 });

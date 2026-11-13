@@ -209,6 +209,26 @@ mod tests {
     }
 
     #[test]
+    fn renders_json_string_escaping_all_control_characters() {
+        let mut vars = Map::new();
+        vars.insert(
+            "task.name".to_string(),
+            json!("\u{0000}\u{0007}\u{0008}\u{000c}\r\n\t\u{001f}\"\\"),
+        );
+
+        let rendered = render_template(
+            r#"{"text":"{{task.name}}"}"#,
+            &vars,
+            EscapeMode::JsonString,
+        );
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            parsed["text"],
+            "\u{0000}\u{0007}\u{0008}\u{000c}\r\n\t\u{001f}\"\\"
+        );
+    }
+
+    #[test]
     fn extract_vars_rejects_invalid_syntax() {
         assert_eq!(
             extract_template_vars("Hello {{task.name}} from {{task.list}}").unwrap(),
