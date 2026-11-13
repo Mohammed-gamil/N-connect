@@ -1,0 +1,12 @@
+node_modules/
+dist/
+web/dist/
+worker/build/
+worker/target/
+target/
+.wrangler/
+.dev.vars
+*.log
+playwright-report/
+test-results/
+.DS_Store

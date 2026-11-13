@@ -1,0 +1,51 @@
+name = "integration-hub"
+main = "worker/build/index.js"
+compatibility_date = "2026-11-01"
+
+[build]
+cwd = "worker"
+command = "worker-build --release"
+
+# React SPA built into web/dist and served by the same Worker (same origin => first-party cookies, no CORS).
+# Requests to /api/* and /hooks/* run the Worker first; everything else is a static asset with SPA fallback.
+[assets]
+directory = "web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/hooks/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "integration-hub"
+database_id = "00000000-0000-0000-0000-000000000000" # replace after `wrangler d1 create integration-hub`
+migrations_dir = "worker/migrations"
+
+[[queues.producers]]
+binding = "EXECUTIONS"
+queue = "hub-executions"
+
+[[queues.consumers]]
+queue = "hub-executions"
+max_batch_size = 5
+max_batch_timeout = 2
+max_retries = 5
+dead_letter_queue = "hub-executions-dlq"
+
+[[queues.consumers]]
+queue = "hub-executions-dlq"
+max_batch_size = 10
+
+[triggers]
+crons = ["*/10 * * * *"] # cleanup expired sessions/oauth states, sweep stuck executions, webhook health
+
+[vars]
+APP_ORIGIN = "http://localhost:8787"   # set to your deployed origin, e.g. https://integration-hub.<you>.workers.dev
+ENVIRONMENT = "development"
+
+# Secrets (set with `wrangler secret put <NAME>`; for local dev put them in .dev.vars — never commit):
+#   CREDENTIALS_KEY_V1      base64 32-byte key for AES-256-GCM credential encryption
+#   CLICKUP_CLIENT_ID / CLICKUP_CLIENT_SECRET
+#   SLACK_CLIENT_ID / SLACK_CLIENT_SECRET
+
+[observability]
+enabled = true
